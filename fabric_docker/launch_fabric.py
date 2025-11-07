@@ -35,7 +35,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -61,8 +61,8 @@ PLATFORM_MAP = {
     "riscv64": "linux/riscv64",
 }
 BINFMT_ENTRY = {
-    "linux/arm64": ("qemu-aarch64", "qemu-arm"),
-    "linux/riscv64": ("qemu-riscv64",),
+    "linux/arm64": "qemu-aarch64",
+    "linux/riscv64": "qemu-riscv64",
 }
 
 def load_yaml(p: Path) -> Any:
@@ -82,23 +82,13 @@ def host_supports(arch: str) -> bool:
 
 
 def binfmt_ready_for(platform_tag: str) -> bool:
-    entries = BINFMT_ENTRY.get(platform_tag)
-    if not entries:
+    entry = BINFMT_ENTRY.get(platform_tag)
+    if not entry:
         return True  # nothing special needed (either native or not tracked)
     root = Path("/proc/sys/fs/binfmt_misc")
     if not root.exists():
         return False
-    for name in entries:
-        p = root / name
-        if not p.exists():
-            continue
-        try:
-            data = p.read_text(errors="ignore")
-        except Exception:
-            data = ""
-        if "enabled" in data:
-            return True
-    return False
+    return (root / entry).exists()
 
 @dataclass
 class NodeSpec:
@@ -274,34 +264,19 @@ def main():
     created = []
     skipped = []
     missing_binfmt: Set[str] = set()
-    auto_emulated: Set[str] = set()
     host_platform = PLATFORM_MAP.get(HOST_ARCH, f"linux/{HOST_ARCH}")
 
     for ns in node_specs:
+        if not args.force_arch and not host_supports(ns.arch):
+            skipped.append((ns.name, f"arch mismatch host={HOST_ARCH} node={ns.arch} (use --force-arch to ignore)"))
+            continue
+
         target_platform = PLATFORM_MAP.get(ns.arch.lower())
         platform_arg: Optional[str] = None
-        host_has_native = host_supports(ns.arch)
-        needs_emulation = not host_has_native
-
-        if needs_emulation:
-            if not target_platform:
-                skipped.append((ns.name, f"arch mismatch host={HOST_ARCH} node={ns.arch} (no platform mapping available)"))
-                continue
-
+        if args.force_arch and target_platform and target_platform != host_platform:
             platform_arg = target_platform
-            ready = binfmt_ready_for(platform_arg)
-            if ready:
-                auto_emulated.add(platform_arg)
-            else:
+            if not binfmt_ready_for(platform_arg):
                 missing_binfmt.add(platform_arg)
-                print(
-                    "[binfmt] WARN: handler for"
-                    f" {platform_arg} not detected; attempting emulation anyway"
-                    " (install via `docker run --privileged --rm tonistiigi/binfmt --install all`)."
-                )
-        elif args.force_arch and target_platform and target_platform != host_platform:
-            # Host already supports this arch; ignore platform forcing.
-            platform_arg = target_platform
 
         spec = build_container_spec(ns, args.image, args.prefix, platform=platform_arg)
 
@@ -381,16 +356,15 @@ def main():
     if skipped:
         for n, r in skipped:
             print(f" - {n}: {r}")
-
-    if auto_emulated:
-        plats = ", ".join(sorted(auto_emulated))
-        print(f"[info] Host binfmt handlers detected; automatically emulating: {plats}.")
+        arch_skips = [1 for _, reason in skipped if "arch mismatch" in reason]
+        if arch_skips and not args.force_arch:
+            print("[hint] To run these anyway, re-launch with --force-arch (requires binfmt/qemu emulation).")
+            print("       Install handlers once with: docker run --privileged --rm tonistiigi/binfmt --install all")
 
     if missing_binfmt:
         plats = ", ".join(sorted(missing_binfmt))
         print(f"[hint] binfmt entries for {plats} were not detected on this host.")
         print("       Install them with: docker run --privileged --rm tonistiigi/binfmt --install all")
-        print("       Re-run the launcher afterwards; containers will start once emulation is available.")
     print(f"Map written → {outp}")
 
 if __name__ == "__main__":
