@@ -1,0 +1,207 @@
+version: "0.1.0"
+
+metadata:
+  name: "Campus+City Fabric"
+  owner: "Shubhankar / NeoCloud DT"
+  description: "Two-region fabric across college campus and nearby city cloudlet; mixes Ethernet/IB/Wi-Fi/LTE."
+  created: "2025-11-07T14:00:00Z"
+  tags: [demo, heterogenous, campus, city, wifi7, infiniband]
+
+defaults:
+  network:
+    fabric: ethernet
+    speed_gbps: 10
+    rtt_ms: 1.0
+    jitter_ms: 0.2
+    loss_pct: 0.05
+    ecn: false
+    mtu_bytes: 1500
+    rocev2: false
+  routing:
+    domain: campus
+    qos_classes:
+      - { name: bulk,   priority: 0, bandwidth_floor_mbps: 100, latency_target_ms: 100 }
+      - { name: normal, priority: 3, bandwidth_floor_mbps: 500, latency_target_ms: 40 }
+      - { name: urgent, priority: 6, bandwidth_floor_mbps: 1000, latency_target_ms: 10 }
+  security:
+    tls_offload_allowed: true
+    ipsec_allowed: true
+    zero_trust: { enabled: true, policy: "org-only datasets cannot leave Campus unless site trust≥0.8" }
+  pricing:
+    currency: "INR"
+    cpu_core_hour: 2.0
+    gpu_hour: 30.0
+    npu_hour: 6.0
+    memory_gb_hour: 0.8
+    storage_gb_month: 5.0
+    egress_gb: 1.0
+  energy:
+    grid_co2_g_per_kwh: 720
+    price_per_kwh: 8.0
+
+regions:
+  - name: campus
+    labels: { jurisdiction: "IIITDM-K" }
+    network:
+      fabric: ethernet
+      speed_gbps: 25
+      rtt_ms: 0.6
+      jitter_ms: 0.15
+      loss_pct: 0.02
+      rocev2: true
+      mtu_bytes: 9000
+    sites:
+      - name: site-hostel
+        cidr: "10.10.0.0/16"
+        labels: { zone: hostel, qos: normal }
+        network:
+          fabric: ethernet
+          speed_gbps: 10
+          rtt_ms: 0.8
+          jitter_ms: 0.2
+          mtu_bytes: 1500
+      - name: site-lab
+        cidr: "10.20.0.0/16"
+        labels: { zone: lab, qos: urgent }
+        network:
+          fabric: infiniband
+          speed_gbps: 400
+          rtt_ms: 0.05
+          jitter_ms: 0.01
+          loss_pct: 0.0
+          rocev2: false
+          mtu_bytes: 9000
+        dpus:
+          - { type: bluefield3, ports_gbps: 400, protocol: rocev2, offloads: [tls, ipsec, nvmeof, telemetry] }
+
+  - name: city_mesh
+    labels: { jurisdiction: "City-Edge" }
+    network:
+      fabric: ethernet
+      speed_gbps: 10
+      rtt_ms: 2.5
+      jitter_ms: 0.6
+      loss_pct: 0.1
+    sites:
+      - name: site-datacenter
+        cidr: "10.30.0.0/16"
+        labels: { zone: dc, qos: urgent }
+        network:
+          fabric: ethernet
+          speed_gbps: 100
+          rtt_ms: 0.5
+          jitter_ms: 0.1
+          mtu_bytes: 9000
+        dpus:
+          - { type: intel_ipu_e2100, ports_gbps: 200, protocol: tcp, offloads: [telemetry, nvmeof] }
+      - name: site-cloudlet
+        cidr: "10.40.0.0/16"
+        labels: { zone: cloudlet, qos: normal }
+        network:
+          fabric: wifi
+          speed_gbps: 9.6
+          rtt_ms: 8
+          jitter_ms: 3
+          loss_pct: 0.6
+          mtu_bytes: 1500
+
+subnets:
+  - { name: "campus-backbone", cidr: "10.99.0.0/16", site: "site-lab", qos_class: "urgent" }
+  - { name: "hostel-lan", cidr: "10.10.1.0/24", site: "site-hostel", qos_class: "normal" }
+  - { name: "dc-core", cidr: "10.30.1.0/24", site: "site-datacenter", qos_class: "urgent" }
+
+link_profiles:
+  - { name: LAN-10G,  fabric: ethernet,  speed_gbps: 10,  rtt_ms: 0.8, jitter_ms: 0.2,  loss_pct: 0.03, ecn: false, mtu_bytes: 1500 }
+  - { name: LAN-100G, fabric: ethernet,  speed_gbps: 100, rtt_ms: 0.4, jitter_ms: 0.08, loss_pct: 0.01, ecn: true,  mtu_bytes: 9000 }
+  - { name: IB-400G,  fabric: infiniband, speed_gbps: 400, rtt_ms: 0.05, jitter_ms: 0.01, loss_pct: 0.0, ecn: false, mtu_bytes: 9000 }
+  - { name: WIFI-6E,  fabric: wifi,       speed_gbps: 9.6, rtt_ms: 10,  jitter_ms: 4,    loss_pct: 0.8, ecn: false, mtu_bytes: 1500 }
+  - { name: WIFI-7,   fabric: wifi,       speed_gbps: 23,  rtt_ms: 7,   jitter_ms: 3,    loss_pct: 0.5, ecn: false, mtu_bytes: 1500 }
+  - { name: WAN-1G,   fabric: ethernet,   speed_gbps: 1,   rtt_ms: 12,  jitter_ms: 3,    loss_pct: 0.2, ecn: true,  mtu_bytes: 1500 }
+
+links:
+  # Campus core
+  - { a: site-lab,     b: site-datacenter, profile: IB-400G,   qos_class: urgent, scope: site, subnet: campus-backbone }
+  - { a: site-lab,     b: site-hostel,     profile: LAN-10G,   qos_class: normal, scope: site }
+  - { a: site-hostel,  b: site-cloudlet,   profile: WIFI-7,    qos_class: normal, scope: site }
+  - { a: site-cloudlet,b: site-datacenter, profile: WAN-1G,    qos_class: normal, scope: site }
+  - { a: site-hostel,  b: site-datacenter, profile: LAN-100G,  qos_class: urgent, scope: site }
+
+  # Optional node-specific fast paths (only take effect if these nodes exist)
+  - { a: ws-001, b: srv-003,  profile: LAN-10G,  scope: node }
+  - { a: sbc-010, b: phone-004, profile: WIFI-6E, scope: node }
+
+placement_policies:
+  prefer_same_site: false
+  prefer_same_region: true
+  prefer_low_co2: false
+  max_replication_factor: 3
+  spill_to_cxl_allowed: true
+  format_preferences:
+    - { stage_type: "mlp",            order: [cuda, asic, native, wasm] }
+    - { stage_type: "cv_filter",      order: [npu, cuda, native, wasm] }
+    - { stage_type: "featuregen",     order: [native, wasm, cuda] }
+    - { stage_type: "analytics",      order: [native, wasm, cuda] }
+
+data_locality:
+  - { dataset: "images_raw", at: [site-cloudlet], size_gb: 120, cold_to_hot_ms: 800 }
+  - { dataset: "embeddings_v1", at: [site-datacenter], size_gb: 350, cold_to_hot_ms: 3000 }
+  - { dataset: "models_ckpt", at: [site-lab, site-datacenter], size_gb: 40, cold_to_hot_ms: 500 }
+
+trust_overrides:
+  - { target: site-cloudlet,   trust: 0.72, note: "Community-run APs; medium trust." }
+  - { target: site-datacenter, trust: 0.95, note: "Managed by college IT." }
+  - { target: site-hostel,     trust: 0.85, note: "Managed hostel LAN." }
+
+# Default chaos (applies unless a scenario is chosen override)
+chaos:
+  - kind: link_degrade
+    a: site-hostel
+    b: site-cloudlet
+    at_s: 5
+    duration_s: 45
+    speed_gbps: 2.0
+    rtt_ms: 12
+    jitter_ms: 5
+    loss_pct: 1.2
+  - kind: node_kill
+    node: ws-001
+    at_s: 12
+    duration_s: 8
+  - kind: link_loss_spike
+    a: site-lab
+    b: site-datacenter
+    at_s: 22
+    duration_s: 5
+    loss_pct: 2.5
+
+scenarios:
+  - name: wifi_brownout
+    description: "Wi-Fi 7 cloudlet gets congested; prefer campus backhaul; one workstation thermal derates."
+    apply:
+      placement_policies:
+        prefer_same_region: true
+        format_preferences:
+          - { stage_type: "ingest",         order: [native, wasm] }
+          - { stage_type: "preprocess",     order: [native, wasm, cuda] }
+          - { stage_type: "mlp",            order: [cuda, asic, native] }
+      data_locality:
+        - { dataset: "images_raw", at: [site-hostel], size_gb: 120, cold_to_hot_ms: 600 }
+      link_overrides:
+        - { a: site-hostel, b: site-cloudlet, speed_gbps: 1.0, rtt_ms: 15, jitter_ms: 7, loss_pct: 1.5 }
+    chaos:
+      - { kind: thermal_derate, node: ws-002, at_s: 10, duration_s: 30, thermal_derate: 0.35 }
+      - { kind: link_degrade, a: site-cloudlet, b: site-datacenter, at_s: 8, duration_s: 50, speed_gbps: 0.6, rtt_ms: 25, jitter_ms: 8, loss_pct: 2.0 }
+
+  - name: core_link_cut
+    description: "Hard cut between lab and DC; force spillover via hostel and WAN path."
+    apply:
+      placement_policies:
+        prefer_same_region: false
+        max_replication_factor: 2
+      link_overrides:
+        - { a: site-lab, b: site-datacenter, speed_gbps: 0.1, rtt_ms: 40, jitter_ms: 10, loss_pct: 3.0 }
+    chaos:
+      - { kind: link_down, a: site-lab, b: site-datacenter, at_s: 12, duration_s: 25 }
+      - { kind: node_kill, node: srv-003, at_s: 18, duration_s: 12 }
+      - { kind: link_degrade, a: site-hostel, b: site-datacenter, at_s: 14, duration_s: 30, speed_gbps: 5, rtt_ms: 3, jitter_ms: 1 }
+

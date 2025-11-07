@@ -1,0 +1,290 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$title: "Fabric Job/DAG Schema"
+$type: object
+$comment: >
+  Describes one or more jobs comprised of stages connected as a DAG or simple linear list.
+  Covers deadlines/SLOs, resource needs, formats, data-locality, replication, retries, and placement constraints.
+
+required: [version, jobs]
+properties:
+
+  version:
+    type: string
+    pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    description: Descriptor version (e.g., 0.1.0)
+
+  defaults:
+    type: object
+    description: Optional defaults applied to each job unless overridden.
+    properties:
+      qos: { enum: [best_effort, standard, high, critical], default: standard }
+      deadline_ms: { type: number, minimum: 0 }
+      max_retries: { type: integer, minimum: 0, default: 0 }
+      replicate_short: { type: boolean, default: true }
+      prefer_same_site: { type: boolean, default: false }
+      prefer_same_region: { type: boolean, default: false }
+      allowed_formats:
+        type: array
+        items: { enum: [native, wasm, cuda, npu, fpga, asic] }
+      disallowed_formats:
+        type: array
+        items: { enum: [native, wasm, cuda, npu, fpga, asic] }
+
+  jobs:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      required: [id, stages]
+      properties:
+        id: { type: string, pattern: "^[a-zA-Z0-9._:-]+$" }
+        name: { type: string }
+        description: { type: string }
+
+        # Overall objectives
+        qos: { enum: [best_effort, standard, high, critical], default: standard }
+        deadline_ms: { type: number, minimum: 0, description: "End-to-end soft deadline" }
+        latency_budget_ms:
+          type: object
+          description: "Optional per-phase budgets to guide placement."
+          properties:
+            network_ms: { type: number, minimum: 0 }
+            compute_ms: { type: number, minimum: 0 }
+            queue_ms: { type: number, minimum: 0 }
+            risk_ms: { type: number, minimum: 0 }
+
+        # Data sets referenced by the job (used for locality/egress cost)
+        datasets:
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string }
+              size_mb: { type: number, minimum: 0 }
+              resides_at:
+                type: array
+                items: { type: string, description: "Node or site name" }
+              privacy: { enum: [public, org, confidential, secret], default: public }
+
+        # A DAG or an ordered list of stages.
+        # If 'edges' omitted, stages run in listed order. If provided, they define a DAG by ids.
+        stages:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/$defs/stage"
+
+        edges:
+          type: array
+          description: "Optional DAG edges between stage ids (u -> v). If omitted: linear pipeline."
+          items:
+            type: object
+            required: [from, to]
+            properties:
+              from: { type: string }
+              to:   { type: string }
+
+        # Placement hints for the entire job
+        placement:
+          type: object
+          properties:
+            prefer_site:
+              type: array
+              items: { type: string }
+            avoid_site:
+              type: array
+              items: { type: string }
+            prefer_region:
+              type: array
+              items: { type: string }
+            avoid_region:
+              type: array
+              items: { type: string }
+            required_fabric:
+              type: array
+              items: { enum: [ethernet, infiniband, wifi, lte, satellite] }
+            min_trust: { type: number, minimum: 0, maximum: 1 }
+            min_arches:
+              type: array
+              items: { enum: [amd64, arm64, riscv64] }
+
+        # Fault tolerance & retries
+        fault_tolerance:
+          type: object
+          properties:
+            replication_factor: { type: integer, minimum: 1, default: 1 }
+            checkpointing: { enum: [none, stage_boundary, periodic], default: stage_boundary }
+            checkpoint_interval_ms: { type: number, minimum: 0 }
+            max_retries: { type: integer, minimum: 0, default: 0 }
+            backoff_ms: { type: number, minimum: 0, default: 0 }
+
+        # Accounting & policy preferences for the scheduler
+        policy:
+          type: object
+          properties:
+            optimize_for: { enum: [latency, cost, energy, carbon, balanced], default: latency }
+            carbon_limit_g: { type: number, minimum: 0 }
+            cost_limit_currency: { type: number, minimum: 0 }
+            energy_limit_kwh: { type: number, minimum: 0 }
+            format_preferences:
+              type: array
+              items:
+                type: object
+                required: [stage_type, order]
+                properties:
+                  stage_type: { type: string }
+                  order:
+                    type: array
+                    items: { enum: [cuda, npu, fpga, native, wasm, asic] }
+
+        # Optional metrics labels to bubble up into results
+        labels:
+          type: object
+          additionalProperties: { type: string }
+
+additionalProperties: false
+
+$defs:
+  stage:
+    type: object
+    required: [id, type]
+    properties:
+      id: { type: string, pattern: "^[a-zA-Z0-9._:-]+$" }
+      type: { type: string, description: "Logical stage type e.g., preprocess, embed, mlp, cv_filter, featuregen, analytics, postproc" }
+      description: { type: string }
+
+      # Payload characteristics (affects transfer + compute)
+      size_mb: { type: number, minimum: 0, default: 0 }
+      stream: { type: boolean, default: false }
+      batch_size: { type: integer, minimum: 1, default: 1 }
+
+      # Execution format gating/hints
+      needs_gpu: { type: boolean, default: false }
+      allowed_formats:
+        type: array
+        items: { enum: [native, wasm, cuda, npu, fpga, asic] }
+      disallowed_formats:
+        type: array
+        items: { enum: [native, wasm, cuda, npu, fpga, asic] }
+
+      # Resource requirements (soft; planner may treat as constraints)
+      resources:
+        type: object
+        properties:
+          cpu_cores: { type: number, minimum: 0 }
+          ram_gb:    { type: number, minimum: 0 }
+          vram_gb:   { type: number, minimum: 0 }
+          hbm_gb:    { type: number, minimum: 0 }
+          scratch_gb:{ type: number, minimum: 0 }
+          min_arches:
+            type: array
+            items: { enum: [amd64, arm64, riscv64] }
+          isa_required:
+            type: array
+            items: { enum: [avx2, avx512, sse4_2, neon, sve, sve2, sha, aes] }
+
+      # Accelerator / dtype hints
+      accelerator:
+        type: object
+        properties:
+          prefer: { enum: [gpu, npu, fpga, asic, none], default: none }
+          dtype:
+            type: array
+            items: { enum: [fp32, bf16, fp16, fp8, int8, int4] }
+          min_tops: { type: number, minimum: 0 }
+          min_compute_capability: { type: string }  # e.g., "8.0", "9.0"
+
+      # SLOs at stage level (optional; overrides job-level where relevant)
+      slo:
+        type: object
+        properties:
+          deadline_ms: { type: number, minimum: 0 }
+          p99_ms: { type: number, minimum: 0 }
+
+      # Placement constraints (fine-grained)
+      placement:
+        type: object
+        properties:
+          prefer_nodes:
+            type: array
+            items: { type: string }
+          avoid_nodes:
+            type: array
+            items: { type: string }
+          prefer_site:
+            type: array
+            items: { type: string }
+          avoid_site:
+            type: array
+            items: { type: string }
+          prefer_region:
+            type: array
+            items: { type: string }
+          avoid_region:
+            type: array
+            items: { type: string }
+          required_fabric:
+            type: array
+            items: { enum: [ethernet, infiniband, wifi, lte, satellite] }
+          min_trust: { type: number, minimum: 0, maximum: 1 }
+          anti_affinity:
+            type: array
+            description: "Don’t co-locate with these stage ids (for redundancy)."
+            items: { type: string }
+
+      # Fault tolerance knobs at stage level
+      fault_tolerance:
+        type: object
+        properties:
+          replicate: { type: boolean, default: false }
+          replicas: { type: integer, minimum: 1, default: 1 }
+          retry:
+            type: object
+            properties:
+              max_retries: { type: integer, minimum: 0, default: 0 }
+              backoff_ms: { type: number, minimum: 0, default: 0 }
+
+      # Data I/O at stage level (refs to job.datasets or ad-hoc)
+      io:
+        type: object
+        properties:
+          inputs:
+            type: array
+            items:
+              type: object
+              required: [dataset]
+              properties:
+                dataset: { type: string }
+                size_mb: { type: number, minimum: 0 }
+          outputs:
+            type: array
+            items:
+              type: object
+              required: [dataset]
+              properties:
+                dataset: { type: string }
+                size_mb: { type: number, minimum: 0 }
+
+      # Security / privacy gates
+      security:
+        type: object
+        properties:
+          min_privacy: { enum: [public, org, confidential, secret] }
+          allow_untrusted_nodes: { type: boolean, default: true }
+          require_tls_offload: { type: boolean, default: false }
+          require_ipsec: { type: boolean, default: false }
+
+      # Cost/energy preferences for THIS stage (weights, 0..1)
+      weights:
+        type: object
+        properties:
+          latency: { type: number, minimum: 0, maximum: 1 }
+          cost:    { type: number, minimum: 0, maximum: 1 }
+          energy:  { type: number, minimum: 0, maximum: 1 }
+          carbon:  { type: number, minimum: 0, maximum: 1 }
+
+    additionalProperties: false
+
+additionalProperties: false
+
