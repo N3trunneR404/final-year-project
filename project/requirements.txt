@@ -1,0 +1,21 @@
+
+---
+
+## `requirements.txt`
+
+```txt
+# Core
+Flask>=3.0
+PyYAML>=6.0.1
+requests>=2.32.0
+rich>=13.7
+
+# Optional (UI charts via CDN; no Python deps)
+# Optional Docker-based node emulation
+docker>=7.0.0
+
+# Dev hygiene (optional but handy; used by Makefile targets)
+black>=24.8.0
+isort>=5.13.2
+ruff>=0.6.0
+

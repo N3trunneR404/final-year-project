@@ -1,0 +1,229 @@
+# jobs/jobs_10.yaml
+# Ten demo jobs for Fabric DT. Each job has a deadline, 3–5 stages,
+# and realistic resource/format requirements.
+
+jobs:
+  - id: job-vision-small
+    deadline_ms: 4500
+    stages:
+      - id: s1_ingest
+        type: io
+        size_mb: 40
+        resources: { cpu_cores: 1, mem_gb: 1 }
+        allowed_formats: [native, wasm]
+      - id: s2_preproc
+        type: preproc
+        size_mb: 80
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s3_cnn
+        type: cv
+        size_mb: 120
+        resources: { cpu_cores: 4, mem_gb: 4, gpu_vram_gb: 2 }
+        allowed_formats: [cuda, native]
+
+  - id: job-vision-large
+    deadline_ms: 7000
+    stages:
+      - id: s1_ingest
+        type: io
+        size_mb: 120
+        resources: { cpu_cores: 1, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s2_augment
+        type: preproc
+        size_mb: 180
+        resources: { cpu_cores: 4, mem_gb: 6 }
+        allowed_formats: [native, wasm]
+      - id: s3_backbone
+        type: cv
+        size_mb: 220
+        resources: { cpu_cores: 6, mem_gb: 8, gpu_vram_gb: 6 }
+        allowed_formats: [cuda, native]
+      - id: s4_head
+        type: mlp
+        size_mb: 160
+        resources: { cpu_cores: 4, mem_gb: 4, gpu_vram_gb: 2 }
+        allowed_formats: [cuda, native]
+
+  - id: job-nlp-pipeline
+    deadline_ms: 6000
+    stages:
+      - id: s1_tokenize
+        type: preproc
+        size_mb: 60
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s2_embed
+        type: nlp
+        size_mb: 140
+        resources: { cpu_cores: 4, mem_gb: 4, gpu_vram_gb: 4 }
+        allowed_formats: [cuda, native, wasm]
+      - id: s3_classifier
+        type: mlp
+        size_mb: 90
+        resources: { cpu_cores: 3, mem_gb: 3, gpu_vram_gb: 2 }
+        allowed_formats: [cuda, native]
+
+  - id: job-analytics-batch
+    deadline_ms: 9000
+    stages:
+      - id: s1_extract
+        type: io
+        size_mb: 200
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s2_etl
+        type: analytics
+        size_mb: 260
+        resources: { cpu_cores: 6, mem_gb: 8 }
+        allowed_formats: [native, wasm]
+      - id: s3_xgboost
+        type: analytics
+        size_mb: 180
+        resources: { cpu_cores: 8, mem_gb: 12 }
+        allowed_formats: [native, wasm]
+
+  - id: job-mixed-stream
+    deadline_ms: 5000
+    stages:
+      - id: s1_capture
+        type: io
+        size_mb: 30
+        resources: { cpu_cores: 1, mem_gb: 1 }
+        allowed_formats: [native, wasm]
+      - id: s2_resize
+        type: preproc
+        size_mb: 40
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s3_detector
+        type: cv
+        size_mb: 120
+        resources: { cpu_cores: 4, mem_gb: 4, gpu_vram_gb: 4 }
+        allowed_formats: [cuda, native]
+      - id: s4_tracker
+        type: analytics
+        size_mb: 60
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+
+  - id: job-cv-no-gpu
+    deadline_ms: 6500
+    stages:
+      - id: s1_ingest
+        type: io
+        size_mb: 50
+        resources: { cpu_cores: 1, mem_gb: 1 }
+        allowed_formats: [native, wasm]
+      - id: s2_sift
+        type: cv
+        size_mb: 120
+        resources: { cpu_cores: 6, mem_gb: 6 }
+        allowed_formats: [native, wasm]
+      - id: s3_post
+        type: postproc
+        size_mb: 80
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+
+  - id: job-audio-ml
+    deadline_ms: 5500
+    stages:
+      - id: s1_decode
+        type: io
+        size_mb: 70
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s2_features
+        type: preproc
+        size_mb: 90
+        resources: { cpu_cores: 3, mem_gb: 3 }
+        allowed_formats: [native, wasm]
+      - id: s3_rnn
+        type: nlp
+        size_mb: 130
+        resources: { cpu_cores: 4, mem_gb: 6, gpu_vram_gb: 4 }
+        allowed_formats: [cuda, native]
+
+  - id: job-tabular-boosting
+    deadline_ms: 4000
+    stages:
+      - id: s1_clean
+        type: preproc
+        size_mb: 50
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s2_catboost
+        type: analytics
+        size_mb: 110
+        resources: { cpu_cores: 6, mem_gb: 8 }
+        allowed_formats: [native, wasm]
+      - id: s3_report
+        type: viz
+        size_mb: 30
+        resources: { cpu_cores: 1, mem_gb: 1 }
+        allowed_formats: [native, wasm]
+
+  - id: job-hpc-mixed
+    deadline_ms: 12000
+    stages:
+      - id: s1_partition
+        type: analytics
+        size_mb: 240
+        resources: { cpu_cores: 8, mem_gb: 12 }
+        allowed_formats: [native]
+      - id: s2_gpu_solve
+        type: analytics
+        size_mb: 300
+        resources: { cpu_cores: 6, mem_gb: 10, gpu_vram_gb: 8 }
+        allowed_formats: [cuda, native]
+      - id: s3_reduce
+        type: analytics
+        size_mb: 200
+        resources: { cpu_cores: 6, mem_gb: 8 }
+        allowed_formats: [native]
+
+  - id: job-end2end-mlops
+    deadline_ms: 8000
+    stages:
+      - id: s1_fetch
+        type: io
+        size_mb: 160
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+      - id: s2_validate
+        type: preproc
+        size_mb: 120
+        resources: { cpu_cores: 4, mem_gb: 4 }
+        allowed_formats: [native, wasm]
+      - id: s3_train_head
+        type: mlp
+        size_mb: 220
+        resources: { cpu_cores: 6, mem_gb: 10, gpu_vram_gb: 6 }
+        allowed_formats: [cuda, native]
+      - id: s4_export
+        type: postproc
+        size_mb: 80
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [native, wasm]
+
+  - id: job-wasm-preferred
+    deadline_ms: 3800
+    stages:
+      - id: s1_io
+        type: io
+        size_mb: 20
+        resources: { cpu_cores: 1, mem_gb: 1 }
+        allowed_formats: [wasm, native]
+      - id: s2_sanitize
+        type: preproc
+        size_mb: 35
+        resources: { cpu_cores: 1, mem_gb: 1 }
+        allowed_formats: [wasm, native]
+      - id: s3_light_model
+        type: mlp
+        size_mb: 60
+        resources: { cpu_cores: 2, mem_gb: 2 }
+        allowed_formats: [wasm, native]
+
