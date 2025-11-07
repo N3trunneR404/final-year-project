@@ -1,103 +1,54 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Digital Twin State service (DT).
+dt/state.py — Digital Twin runtime state for the Fabric simulator.
 
-- Loads ./nodes/*.yaml descriptors and sim/topology.yaml
-- Maintains "effective" state by merging live overrides (sim/overrides.json)
-- Exposes:
-    GET  /state/nodes      -> effective nodes (after overrides)
-    GET  /state/links      -> effective link DB (after overrides)
-    POST /observe          -> apply patch-like overrides (as used by sim/chaos.py)
-    POST /plan             -> simple greedy planner (format/accelerator aware)
+Responsibilities
+---------------
+- Load per-node descriptors:          ./nodes/*.yaml
+- Load optional topology:             ./sim/topology.yaml  (links, defaults)
+- Watch & merge runtime overrides:    ./sim/overrides.json (written by sim/chaos.py)
+- Maintain thread-safe resource view: capacities, reservations, queues
+- Offer a compact API for dt/api.py:
+    • snapshot()                 → dict (nodes, links, ts)
+    • reserve(req)               → reservation_id or None
+    • release(reservation_id)    → bool
+    • score_node_basic(stage,n)  → float (lower is better)
+    • apply_observation(payload) → merge ad-hoc updates (used by /observe)
 
-Planner contract (used by sim/montecarlo.py):
-    POST /plan
-    {
-      "jobs": { "jobs": [ { "id": "...", "stages": [...], "deadline_ms": ... } ] },
-      "nodes": [optional external node list; else DT nodes],
-      "topology": [optional external topo; else DT topo],
-      "mode": "montecarlo" | "default"
-    }
-    -> { "assignments": { "<stage_id>": "<node_name>", ... } }
+Design notes
+------------
+- No hard dependency on Flask here (pure state). dt/api.py can import and call it.
+- Only non-stdlib dep is PyYAML. (requests is optional if you later push updates out.)
+- Links are stored as an undirected map keyed by "A|B".
+- Dynamic/ephemeral state is kept under node["dyn"] and link["dyn"].
 
-Run:
-    pip install fastapi uvicorn pyyaml
-    python3 dt/state.py --nodes nodes --topology sim/topology.yaml --overrides sim/overrides.json --port 5055
+Paths (configurable via constructor)
+-----------------------------------
+nodes_dir        default: "nodes"
+topology_path    default: "sim/topology.yaml" (optional)
+overrides_path   default: "sim/overrides.json" (optional)
+
 """
 
 from __future__ import annotations
-import argparse, json, os, threading, time, math, statistics
+
+import json
+import os
+import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
 import yaml
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 
-# -----------------------------
-# File IO
-# -----------------------------
 
-def load_yaml(p: Path) -> Any:
-    with open(p, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-def safe_read_json(p: Path, default: Any) -> Any:
-    try:
-        if p.exists():
-            return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return default
-
-def write_json(p: Path, data: Any):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-# -----------------------------
-# Link helpers
-# -----------------------------
+# ----------------------------- helpers -----------------------------
 
 def link_key(a: str, b: str) -> str:
     return "|".join(sorted([a, b]))
 
-def build_link_db(topology: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    db: Dict[str, Dict[str, Any]] = {}
-    for ln in topology.get("links", []) or []:
-        a = ln.get("a"); b = ln.get("b")
-        if not a or not b:
-            continue
-        prof = ln.get("profile")
-        rec = {}
-        # default inline values
-        for k in ("speed_gbps","rtt_ms","jitter_ms","loss_pct","ecn","mtu_bytes"):
-            if k in ln: rec[k] = ln[k]
-        if prof:
-            # if a profile exists, also bubble profile name so planners can resolve if needed
-            rec["profile"] = prof
-        rec["down"] = False
-        db[link_key(a,b)] = rec
-    return db
-
-def get_link_metrics(db: Dict[str, Dict[str, Any]], a: str, b: str,
-                     default_speed_gbps: float = 1.0,
-                     default_rtt_ms: float = 5.0,
-                     default_jitter_ms: float = 0.5) -> Tuple[float, float, float, float, bool]:
-    k = link_key(a,b)
-    if k in db:
-        d = db[k]
-        return (
-            float(d.get("speed_gbps", default_speed_gbps)),
-            float(d.get("rtt_ms", default_rtt_ms)),
-            float(d.get("jitter_ms", default_jitter_ms)),
-            float(d.get("loss_pct", 0.0)),
-            bool(d.get("down", False)),
-        )
-    # site-wide link fallback not implemented here; callers may insert site names directly
-    return default_speed_gbps, default_rtt_ms, default_jitter_ms, 0.0, False
-
-# -----------------------------
-# Cost model & planner bits
-# -----------------------------
 
 def safe_float(x: Any, default: float = 0.0) -> float:
     try:
@@ -105,379 +56,555 @@ def safe_float(x: Any, default: float = 0.0) -> float:
     except Exception:
         return default
 
-def node_compute_capacity(node: Dict[str, Any]) -> float:
-    cpu = node.get("cpu", {})
-    cores = safe_float(cpu.get("cores"), 0)
-    ghz   = safe_float(cpu.get("base_ghz"), 0)
-    derate = safe_float(node.get("_eff", {}).get("thermal_derate"), 0.0)
-    if node.get("_eff", {}).get("down", False):
-        return 0.0
-    # power cap hint: if present, scale capacity (crude)
-    pcap = safe_float(node.get("_eff", {}).get("power_cap_w"), 0.0)
-    cap = max(0.0, cores * ghz * (1.0 - derate))
-    if pcap > 0:
-        cap *= 0.7  # simple cap effect
-    return cap
 
-def accel_multiplier(node: Dict[str, Any], stage: Dict[str, Any]) -> float:
-    fmts_node = set(node.get("formats_supported") or [])
-    fmt_allow = set(stage.get("allowed_formats") or [])
-    fmt_dis   = set(stage.get("disallowed_formats") or [])
+def safe_int(x: Any, default: int = 0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
 
-    mult = 1.0
-    # CUDA
-    if ("cuda" in fmts_node) and ("cuda" not in fmt_dis) and (not fmt_allow or "cuda" in fmt_allow):
-        score = safe_float((node.get("gpu") or {}).get("accel_score"), 0.0)
-        if score > 0:
-            mult = max(mult, min(1.0 + score/10.0, 6.0))
-    # NPU
-    acc = node.get("accelerators") or {}
-    if ("npu" in fmts_node) and ("npu" not in fmt_dis) and (not fmt_allow or "npu" in fmt_allow):
-        tops = safe_float(acc.get("npu_tops"), 0.0)
-        mult = max(mult, min(1.0 + tops/10.0, 3.0))
-    # WASM/native: modest boost if stage prefers them
-    if ("wasm" in fmts_node) and (fmt_allow and "wasm" in fmt_allow):
-        mult = max(mult, 1.15)
-    if ("native" in fmts_node) and (fmt_allow and "native" in fmt_allow):
-        mult = max(mult, 1.05)
-    return mult
 
-def stage_compute_time_ms(stage: Dict[str, Any], node: Dict[str, Any]) -> float:
-    cap = node_compute_capacity(node)
-    if cap <= 0: return float("inf")
-    size_mb = safe_float(stage.get("size_mb"), 10.0)
-    cpu_req = safe_float((stage.get("resources") or {}).get("cpu_cores"), 1.0)
-    base = max(20.0, size_mb * 2.0 + cpu_req * 100.0)
-    base /= max(1.0, cap/10.0)
-    base /= accel_multiplier(node, stage)
-    # trust penalty (optional)
-    trust = safe_float((node.get("labels") or {}).get("trust"), 0.9)
-    if trust < 0.75:
-        base *= 1.05
-    return base
+def utc_ms() -> int:
+    return int(time.time() * 1000)
 
-def transfer_time_ms(src: str, dst: str, size_mb: float, link_db: Dict[str, Dict[str, Any]]) -> float:
-    if size_mb <= 0 or src == dst:
-        return 0.0
-    speed_gbps, rtt_ms, jitter_ms, loss_pct, down = get_link_metrics(link_db, src, dst, default_speed_gbps=1.0, default_rtt_ms=5.0)
-    if down:
-        return float("inf")
-    mbps = speed_gbps * 1000.0
-    eff_mbps = mbps * (1.0 - min(0.3, loss_pct/100.0)) * 0.85
-    xfer = (size_mb * 8.0) / max(1.0, eff_mbps) * 1000.0
-    return xfer + rtt_ms + jitter_ms
 
-def greedy_place(job: Dict[str, Any], nodes: List[Dict[str, Any]], link_db: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
-    assign: Dict[str, str] = {}
-    stages = job.get("stages") or []
-    prev_node = None
-    for st in stages:
-        candidates = []
-        for n in nodes:
-            if n.get("_eff", {}).get("down", False):
-                continue
-            # format gate
-            allowed = set(st.get("allowed_formats") or [])
-            disallowed = set(st.get("disallowed_formats") or [])
-            fmts = set(n.get("formats_supported") or [])
-            if allowed and not (fmts & allowed):
-                continue
-            if disallowed and (fmts & disallowed):
-                continue
-            # compute + transfer
-            comp = stage_compute_time_ms(st, n)
-            xfer = 0.0 if prev_node is None else transfer_time_ms(prev_node, n["name"], safe_float(st.get("size_mb"), 10.0), link_db)
-            candidates.append((comp + xfer, n["name"]))
-        if not candidates:
-            # fallback: any alive node
-            fallback = next((nn["name"] for nn in nodes if not nn.get("_eff", {}).get("down", False)), None)
-            assign[st["id"]] = fallback or "unavailable"
-        else:
-            candidates.sort(key=lambda x: x[0])
-            choice = candidates[0][1]
-            assign[st["id"]] = choice
-            prev_node = choice
-    return assign
+# ----------------------------- data classes -----------------------------
 
-# -----------------------------
-# DT State
-# -----------------------------
+@dataclass
+class NodeDyn:
+    """Mutable, runtime-only fields for a node."""
+    down: bool = False
+    thermal_derate: float = 0.0         # 0..1
+    power_cap_w: Optional[float] = None
+    clock_skew_ms: Optional[float] = None
+    packet_dup: Optional[float] = None
+    packet_reorder: Optional[float] = None
+    used_cpu_cores: float = 0.0
+    used_mem_gb: float = 0.0
+    used_gpu_vram_gb: float = 0.0
+    reservations: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # res_id -> req
+
+
+@dataclass
+class LinkDyn:
+    """Mutable, runtime-only fields for a link."""
+    down: bool = False
+    speed_gbps: Optional[float] = None
+    rtt_ms: Optional[float] = None
+    jitter_ms: Optional[float] = None
+    loss_pct: Optional[float] = None
+    ecn: Optional[bool] = None
+
+
+# ----------------------------- DT State -----------------------------
 
 class DTState:
-    def __init__(self, nodes_dir: Path, topology_path: Path, overrides_path: Path, refresh_sec: float = 1.0):
-        self.nodes_dir = nodes_dir
-        self.topology_path = topology_path
-        self.overrides_path = overrides_path
-        self.refresh_sec = max(0.2, refresh_sec)
+    def __init__(
+        self,
+        nodes_dir: str = "nodes",
+        topology_path: str = "sim/topology.yaml",
+        overrides_path: str = "sim/overrides.json",
+        watch_interval_sec: float = 0.5,
+        auto_start_watchers: bool = True,
+    ):
+        self.nodes_dir = Path(nodes_dir)
+        self.topology_path = Path(topology_path)
+        self.overrides_path = Path(overrides_path)
+
         self._lock = threading.RLock()
 
-        self._nodes_raw: List[Dict[str, Any]] = []
-        self._topology: Dict[str, Any] = {}
-        self._link_db_base: Dict[str, Dict[str, Any]] = {}
-        self._overrides: Dict[str, Any] = {"links": {}, "nodes": {}}
+        # Static-ish structures
+        self.nodes_by_name: Dict[str, Dict[str, Any]] = {}  # includes 'dyn'
+        self.links_by_key: Dict[str, Dict[str, Any]] = {}   # includes 'dyn'
+        self.defaults: Dict[str, Any] = {}
 
-        self._nodes_eff: List[Dict[str, Any]] = []
-        self._link_db_eff: Dict[str, Dict[str, Any]] = {}
+        # Overrides (raw copies of sim/overrides.json)
+        self._overrides: Dict[str, Any] = {"nodes": {}, "links": {}}
+        self._overrides_mtime: float = 0.0
 
-        self._load_all()
-        self._apply_overrides()
-        self._start_watcher()
+        # Node/Topology mtimes to allow hot reloads if you want to extend it
+        self._nodes_mtime: float = 0.0
+        self._topology_mtime: float = 0.0
 
-    # ---------- Loading & applying ----------
+        # Reservation counter
+        self._res_seq: int = 1
 
-    def _load_nodes(self) -> List[Dict[str, Any]]:
-        out = []
-        for f in sorted(self.nodes_dir.glob("*.yaml")):
+        # Initial load
+        self._load_nodes_locked()
+        self._load_topology_locked()
+        self._load_overrides_locked(apply_now=True)
+
+        # Background watcher for overrides (and optionally hot-reload topology)
+        self._watch_interval = max(0.2, float(watch_interval_sec))
+        self._watch_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+
+        if auto_start_watchers:
+            self.start()
+
+    # -------- public lifecycle --------
+
+    def start(self):
+        if self._watch_thread and self._watch_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._watch_thread = threading.Thread(target=self._watch_loop, name="DTStateWatch", daemon=True)
+        self._watch_thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._watch_thread:
+            self._watch_thread.join(timeout=2.0)
+
+    # -------- loads & merges --------
+
+    def _load_nodes_locked(self):
+        """Load ./nodes/*.yaml into nodes_by_name with fresh dyn slots."""
+        with self._lock:
+            nodes: Dict[str, Dict[str, Any]] = {}
+            latest_mtime = self._nodes_mtime
+            for f in sorted(self.nodes_dir.glob("*.yaml")):
+                try:
+                    stat = f.stat()
+                    latest_mtime = max(latest_mtime, stat.st_mtime)
+                    data = yaml.safe_load(f.read_text(encoding="utf-8"))
+                    name = data.get("name")
+                    if not name:
+                        continue
+                    # Ensure dyn exists and keep capacity-derived caches
+                    data.setdefault("dyn", NodeDyn().__dict__.copy())
+                    # Cached capacities
+                    self._compute_and_cache_capacities(data)
+                    nodes[name] = data
+                except Exception as e:
+                    print(f"[state] WARN: failed to load node {f.name}: {e}")
+
+            self.nodes_by_name = nodes
+            self._nodes_mtime = latest_mtime
+
+    def _load_topology_locked(self):
+        """Load topology (links + defaults) if present."""
+        with self._lock:
+            if not self.topology_path.exists():
+                self.links_by_key = {}
+                self.defaults = {}
+                return
             try:
-                out.append(load_yaml(f))
-            except Exception:
-                continue
-        return out
+                stat = self.topology_path.stat()
+                topo = yaml.safe_load(self.topology_path.read_text(encoding="utf-8"))
+                self._topology_mtime = stat.st_mtime
 
-    def _load_topology(self) -> Dict[str, Any]:
-        if self.topology_path.exists():
-            return load_yaml(self.topology_path)
-        return {"links": []}
+                # Defaults (optional; used if you want to fall back)
+                self.defaults = topo.get("defaults", {}) or {}
 
-    def _load_overrides(self) -> Dict[str, Any]:
-        return safe_read_json(self.overrides_path, {"links": {}, "nodes": {}})
+                links: Dict[str, Dict[str, Any]] = {}
+                for ln in (topo.get("links") or []):
+                    a, b = ln.get("a"), ln.get("b")
+                    if not a or not b:
+                        continue
+                    k = link_key(a, b)
+                    lnd = {
+                        "a": a, "b": b,
+                        "profile": ln.get("profile"),
+                        "qos_class": ln.get("qos_class"),
+                        "scope": ln.get("scope", "site"),
+                        "subnet": ln.get("subnet"),
+                        "base": {
+                            # Allow explicit metrics in link inline
+                            "speed_gbps": ln.get("speed_gbps"),
+                            "rtt_ms": ln.get("rtt_ms"),
+                            "jitter_ms": ln.get("jitter_ms"),
+                            "loss_pct": ln.get("loss_pct"),
+                            "ecn": ln.get("ecn"),
+                        },
+                        "dyn": LinkDyn().__dict__.copy(),
+                    }
+                    # Strip Nones from base for cleanliness
+                    lnd["base"] = {k2: v2 for k2, v2 in lnd["base"].items() if v2 is not None}
+                    links[k] = lnd
+                self.links_by_key = links
+            except Exception as e:
+                print(f"[state] WARN: failed to load topology: {e}")
+                self.links_by_key = {}
+                self.defaults = {}
 
-    def _load_all(self):
+    def _load_overrides_locked(self, apply_now: bool = True):
+        """Load sim/overrides.json if present; optionally apply immediately."""
         with self._lock:
-            self._nodes_raw = self._load_nodes()
-            self._topology = self._load_topology()
-            self._link_db_base = build_link_db(self._topology)
-            self._overrides = self._load_overrides()
-
-    def _apply_overrides(self):
-        with self._lock:
-            # Effective link DB = base + overrides.links (shallow field-level merge)
-            L = {k: dict(v) for k, v in self._link_db_base.items()}
-            for k, patch in (self._overrides.get("links") or {}).items():
-                base = L.get(k, {})
-                base.update(patch)
-                L[k] = base
-            self._link_db_eff = L
-
-            # Effective nodes = raw nodes with a transient _eff field merged from overrides.nodes
-            N = []
-            for n in self._nodes_raw:
-                m = dict(n)
-                o = (self._overrides.get("nodes") or {}).get(n.get("name", ""), {})
-                m["_eff"] = {
-                    "down": bool(o.get("down", False)),
-                    "power_cap_w": o.get("power_cap_w"),
-                    "thermal_derate": o.get("thermal_derate"),
-                    "clock_skew_ms": o.get("clock_skew_ms"),
-                    "packet_dup": o.get("packet_dup"),
-                    "packet_reorder": o.get("packet_reorder"),
+            if not self.overrides_path.exists():
+                self._overrides = {"nodes": {}, "links": {}}
+                self._overrides_mtime = 0.0
+                return
+            try:
+                stat = self.overrides_path.stat()
+                if stat.st_mtime <= self._overrides_mtime:
+                    return
+                raw = json.loads(self.overrides_path.read_text(encoding="utf-8"))
+                self._overrides = {
+                    "nodes": raw.get("nodes", {}) or {},
+                    "links": raw.get("links", {}) or {},
                 }
-                N.append(m)
-            self._nodes_eff = N
+                self._overrides_mtime = stat.st_mtime
+                if apply_now:
+                    self._apply_overrides_locked()
+            except Exception as e:
+                print(f"[state] WARN: failed to load overrides.json: {e}")
 
-    # ---------- Public getters ----------
+    def _apply_overrides_locked(self):
+        """Merge self._overrides into node/link dyn fields."""
+        # Nodes
+        for nname, changes in self._overrides.get("nodes", {}).items():
+            n = self.nodes_by_name.get(nname)
+            if not n:
+                continue
+            dyn = n.setdefault("dyn", NodeDyn().__dict__.copy())
+            # Only accept known fields
+            for k in ("down", "power_cap_w", "thermal_derate", "clock_skew_ms",
+                      "packet_dup", "packet_reorder"):
+                if k in changes:
+                    dyn[k] = changes[k]
 
-    def get_nodes(self) -> List[Dict[str, Any]]:
-        with self._lock:
-            return self._nodes_eff
+        # Links
+        for k, changes in self._overrides.get("links", {}).items():
+            l = self.links_by_key.get(k)
+            if not l:
+                # Permit ad-hoc links (e.g., node↔node Wi-Fi), create shell
+                parts = k.split("|", 1)
+                if len(parts) == 2:
+                    l = {"a": parts[0], "b": parts[1], "base": {}, "dyn": LinkDyn().__dict__.copy()}
+                    self.links_by_key[k] = l
+                else:
+                    continue
+            dyn = l.setdefault("dyn", LinkDyn().__dict__.copy())
+            for kk in ("down", "speed_gbps", "rtt_ms", "jitter_ms", "loss_pct", "ecn"):
+                if kk in changes:
+                    dyn[kk] = changes[kk]
 
-    def get_link_db(self) -> Dict[str, Dict[str, Any]]:
-        with self._lock:
-            return self._link_db_eff
+    def _compute_and_cache_capacities(self, node: Dict[str, Any]):
+        """Precompute static capacities and store under node['caps']."""
+        cpu = node.get("cpu", {}) or {}
+        mem = node.get("memory", {}) or {}
+        gpu = node.get("gpu", {}) or {}
 
-    def get_topology(self) -> Dict[str, Any]:
-        with self._lock:
-            return self._topology
+        cores = safe_float(cpu.get("cores"), 0.0)
+        base_ghz = safe_float(cpu.get("base_ghz"), 0.0)
+        ram_gb = safe_float(mem.get("ram_gb"), 0.0)
+        vram_gb = safe_float(gpu.get("vram_gb"), 0.0)
 
-    # ---------- Observe/override ----------
+        # naive "capacity units"
+        cpu_units = cores * base_ghz
+        node["caps"] = {
+            "cpu_units": cpu_units,
+            "max_cpu_cores": cores,
+            "ram_gb": ram_gb,
+            "gpu_vram_gb": vram_gb,
+        }
 
-    def observe(self, action: str, payload: Dict[str, Any]):
-        """
-        Accepts patches like those emitted by sim/chaos.py:
-          {"action":"apply","payload":{"type":"link","key":"A|B","changes":{"speed_gbps":1.0}}}
-          {"action":"revert","payload":{"type":"node","node":"ws-001","fields":["down"]}}
-        """
-        dirty = False
-        o = self._overrides
-        typ = (payload or {}).get("type")
-        if action == "apply":
-            if typ == "link":
-                k = payload.get("key")
-                ch = payload.get("changes") or {}
-                if k:
-                    cur = o.setdefault("links", {}).get(k, {})
-                    cur.update(ch)
-                    o["links"][k] = cur
-                    dirty = True
-            elif typ == "node":
-                node = payload.get("node")
-                ch = payload.get("changes") or {}
-                if node:
-                    cur = o.setdefault("nodes", {}).get(node, {})
-                    cur.update(ch)
-                    o["nodes"][node] = cur
-                    dirty = True
-        elif action == "revert":
-            if typ == "link":
-                k = payload.get("key")
-                fields = payload.get("fields") or []
-                if k and k in o.get("links", {}):
-                    for f in fields:
-                        o["links"][k].pop(f, None)
-                    if not o["links"][k]:
-                        o["links"].pop(k, None)
-                    dirty = True
-            elif typ == "node":
-                node = payload.get("node")
-                fields = payload.get("fields") or []
-                if node and node in o.get("nodes", {}):
-                    for f in fields:
-                        o["nodes"][node].pop(f, None)
-                    if not o["nodes"][node]:
-                        o["nodes"].pop(node, None)
-                    dirty = True
-
-        if dirty:
-            write_json(self.overrides_path, o)
-            self._apply_overrides()
-
-    # ---------- Planning ----------
-
-    def plan(self, jobs_payload: Dict[str, Any],
-             nodes_ext: Optional[List[Dict[str, Any]]] = None,
-             topology_ext: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-        with self._lock:
-            nodes = nodes_ext if nodes_ext else self._nodes_eff
-            link_db = build_link_db(topology_ext) if topology_ext else self._link_db_eff
-        jobs_list = (jobs_payload or {}).get("jobs") or []
-        if not jobs_list:
-            return {}
-
-        # For MVP, if multiple jobs are provided, plan the first; or flatten by sequential planning
-        # Here we plan the first job; extend if needed.
-        job = jobs_list[0]
-        return greedy_place(job, nodes, link_db)
-
-    # ---------- Background watcher ----------
+    # -------- watcher loop --------
 
     def _watch_loop(self):
-        last_mtime = None
-        while True:
+        while not self._stop_event.is_set():
             try:
-                if self.overrides_path.exists():
-                    m = self.overrides_path.stat().st_mtime
-                    if last_mtime is None or m > last_mtime:
-                        last_mtime = m
-                        self._overrides = self._load_overrides()
-                        self._apply_overrides()
-                # nodes/topology hot-reload (optional, every N ticks)
-                # cheap: reload every ~5s
-                if int(time.time()) % 5 == 0:
-                    self._nodes_raw = self._load_nodes()
-                    self._topology = self._load_topology()
-                    self._link_db_base = build_link_db(self._topology)
-                    self._apply_overrides()
-            except Exception:
-                pass
-            time.sleep(self.refresh_sec)
+                # Overrides
+                self._load_overrides_locked(apply_now=True)
 
-    def _start_watcher(self):
-        t = threading.Thread(target=self._watch_loop, daemon=True)
-        t.start()
+                # (Optional) Hot-reload topology if changed on disk
+                if self.topology_path.exists():
+                    stat = self.topology_path.stat()
+                    if stat.st_mtime > self._topology_mtime:
+                        self._load_topology_locked()
 
-    # expose paths for watcher
-    @property
-    def overrides_path(self) -> Path:
-        return self._overrides_path
-    @overrides_path.setter
-    def overrides_path(self, p: Path):
-        self._overrides_path = p
+                # (Optional) Hot-reload nodes if you regenerate them
+                # (commented by default to avoid flicker)
+                # latest_nodes_mtime = max([f.stat().st_mtime for f in self.nodes_dir.glob("*.yaml")] + [0.0])
+                # if latest_nodes_mtime > self._nodes_mtime:
+                #     self._load_nodes_locked()
+            except Exception as e:
+                print(f"[state] WARN: watcher iteration failed: {e}")
 
-# -----------------------------
-# FastAPI wiring
-# -----------------------------
+            self._stop_event.wait(self._watch_interval)
 
-def make_app(state: DTState) -> FastAPI:
-    app = FastAPI(title="NeoCloud DT State", version="0.1.0")
+    # -------- public API (read) --------
 
-    @app.get("/state/nodes")
-    def get_nodes():
-        return JSONResponse(state.get_nodes())
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a thread-safe snapshot for UI/clients."""
+        with self._lock:
+            nodes = []
+            for n in self.nodes_by_name.values():
+                dyn = n.get("dyn", {})
+                caps = n.get("caps", {})
+                eff = self._effective_caps(n)
+                nodes.append({
+                    "name": n.get("name"),
+                    "class": n.get("class"),
+                    "arch": n.get("arch"),
+                    "formats_supported": n.get("formats_supported", []),
+                    "labels": n.get("labels", {}),
+                    "network": n.get("network", {}),
+                    "gpu": n.get("gpu", {}),
+                    "caps": caps,
+                    "dyn": dyn,
+                    "effective": eff,   # remaining capacities after derates+reservations
+                })
 
-    @app.get("/state/links")
-    def get_links():
-        return JSONResponse(state.get_link_db())
+            links = []
+            for k, l in self.links_by_key.items():
+                links.append({
+                    "key": k,
+                    "a": l.get("a"),
+                    "b": l.get("b"),
+                    "base": l.get("base", {}),
+                    "dyn": l.get("dyn", {}),
+                    "effective": self._effective_link(l),
+                })
 
-    @app.post("/observe")
-    async def post_observe(req: Request):
+            return {
+                "ts": utc_ms(),
+                "nodes": nodes,
+                "links": links,
+            }
+
+    def get_node(self, name: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return self.nodes_by_name.get(name)
+
+    # -------- public API (write/update) --------
+
+    def apply_observation(self, payload: Dict[str, Any]) -> None:
         """
-        Body: {"action": "apply"|"revert", "payload": {...}}
-        Matches sim/chaos.py posting style.
+        Merge an observation (same shape chaos uses):
+        { "action": "apply"|"revert", "payload": {"type": "node"|"link", ...}}
         """
-        body = await req.json()
-        action = body.get("action")
-        payload = body.get("payload") or {}
-        if action not in ("apply","revert"):
-            return JSONResponse({"ok": False, "error": "invalid action"}, status_code=400)
-        state.observe(action, payload)
-        return JSONResponse({"ok": True})
+        with self._lock:
+            p = payload.get("payload", {})
+            typ = p.get("type")
+            if typ == "node":
+                node = p.get("node")
+                changes = p.get("changes") or {}
+                target = self.nodes_by_name.get(node)
+                if not target:
+                    return
+                dyn = target.setdefault("dyn", NodeDyn().__dict__.copy())
+                for k, v in changes.items():
+                    if k in dyn:
+                        dyn[k] = v
+            elif typ == "link":
+                k = p.get("key")
+                changes = p.get("changes") or {}
+                link = self.links_by_key.get(k)
+                if not link:
+                    # Create on the fly if key is valid
+                    parts = k.split("|", 1)
+                    if len(parts) == 2:
+                        link = {"a": parts[0], "b": parts[1], "base": {}, "dyn": LinkDyn().__dict__.copy()}
+                        self.links_by_key[k] = link
+                    else:
+                        return
+                dyn = link.setdefault("dyn", LinkDyn().__dict__.copy())
+                for kk, vv in changes.items():
+                    if kk in dyn:
+                        dyn[kk] = vv
 
-    @app.post("/plan")
-    async def post_plan(req: Request):
+    # -------- reservations --------
+
+    def reserve(self, req: Dict[str, Any]) -> Optional[str]:
         """
-        Accepts jobs/nodes/topology (optional) and returns assignments.
+        Try to reserve resources on a specific node or choose one automatically.
+
+        req example:
+        {
+          "node": "ws-001",                # optional; if omitted, caller should choose a node via planner
+          "cpu_cores": 2.0,
+          "mem_gb": 4.0,
+          "gpu_vram_gb": 2.0
+        }
         """
-        body = await req.json()
-        jobs = body.get("jobs") or {}
-        nodes = body.get("nodes")
-        topo  = body.get("topology")
-        assign = state.plan(jobs, nodes_ext=nodes, topology_ext=topo)
-        return JSONResponse({"assignments": assign})
+        with self._lock:
+            node_name = req.get("node")
+            if not node_name:
+                return None
+            n = self.nodes_by_name.get(node_name)
+            if not n:
+                return None
+            if self._is_down(n):
+                return None
 
-    return app
+            eff = self._effective_caps(n)
+            need_cpu = safe_float(req.get("cpu_cores"), 0.0)
+            need_mem = safe_float(req.get("mem_gb"), 0.0)
+            need_vram = safe_float(req.get("gpu_vram_gb"), 0.0)
 
-# -----------------------------
-# CLI / entry
-# -----------------------------
+            if eff["free_cpu_cores"] + 1e-9 < need_cpu:
+                return None
+            if eff["free_mem_gb"] + 1e-9 < need_mem:
+                return None
+            if eff["free_gpu_vram_gb"] + 1e-9 < need_vram:
+                return None
 
-def main():
-    ap = argparse.ArgumentParser(description="DT State service")
-    ap.add_argument("--nodes", default="nodes", help="Directory with node YAMLs")
-    ap.add_argument("--topology", default="sim/topology.yaml", help="Topology YAML path")
-    ap.add_argument("--overrides", default="sim/overrides.json", help="Overrides JSON path")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=5055)
-    ap.add_argument("--refresh", type=float, default=1.0, help="Refresh period (s) for file watcher")
-    ap.add_argument("--no-server", action="store_true", help="Just build state once and print a summary")
-    args = ap.parse_args()
+            # allocate
+            dyn = n.setdefault("dyn", NodeDyn().__dict__.copy())
+            dyn["used_cpu_cores"] += need_cpu
+            dyn["used_mem_gb"] += need_mem
+            dyn["used_gpu_vram_gb"] += need_vram
 
-    nodes_dir = Path(args.nodes)
-    topo_path = Path(args.topology)
-    ovr_path  = Path(args.overrides)
+            rid = f"res-{self._res_seq:07d}"
+            self._res_seq += 1
+            dyn.setdefault("reservations", {})[rid] = {
+                "cpu_cores": need_cpu,
+                "mem_gb": need_mem,
+                "gpu_vram_gb": need_vram,
+                "ts": utc_ms(),
+            }
+            return rid
 
-    state = DTState(nodes_dir=nodes_dir, topology_path=topo_path, overrides_path=ovr_path, refresh_sec=args.refresh)
+    def release(self, node_name: str, reservation_id: str) -> bool:
+        with self._lock:
+            n = self.nodes_by_name.get(node_name)
+            if not n:
+                return False
+            dyn = n.get("dyn") or {}
+            res = (dyn.get("reservations") or {}).pop(reservation_id, None)
+            if not res:
+                return False
+            dyn["used_cpu_cores"] = max(0.0, dyn.get("used_cpu_cores", 0.0) - safe_float(res.get("cpu_cores"), 0.0))
+            dyn["used_mem_gb"] = max(0.0, dyn.get("used_mem_gb", 0.0) - safe_float(res.get("mem_gb"), 0.0))
+            dyn["used_gpu_vram_gb"] = max(0.0, dyn.get("used_gpu_vram_gb", 0.0) - safe_float(res.get("gpu_vram_gb"), 0.0))
+            return True
 
-    if args.no_server:
-        ns = state.get_nodes()
-        ls = state.get_link_db()
-        print(f"[dt] nodes={len(ns)} links={len(ls)}")
-        # tiny preview
-        if ns:
-            n0 = ns[0]
-            print("[dt] example node:", n0.get("name"), "cap=", round(node_compute_capacity(n0), 3))
-        return 0
+    # -------- scoring utility (baseline) --------
 
-    # lazy import uvicorn only when serving
-    try:
-        import uvicorn
-    except Exception as e:
-        print("Error: uvicorn not installed. `pip install uvicorn`")
-        return 2
+    def score_node_basic(self, stage: Dict[str, Any], node: Dict[str, Any]) -> float:
+        """
+        Lower is better. Very simple latency proxy:
+        - Penalize 'down', thermal_derate, low CPU_units
+        - Give a boost if formats_supported matches stage's allowed_formats (cuda/npu)
+        """
+        if self._is_down(node):
+            return 1e12
 
-    app = make_app(state)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-    return 0
+        caps = node.get("caps", {})
+        dyn = node.get("dyn", {})
+        cpu_units = safe_float(caps.get("cpu_units"), 0.0)
+        derate = safe_float(dyn.get("thermal_derate"), 0.0)
+
+        # format preference
+        allowed = set(stage.get("allowed_formats") or [])
+        fmts = set(node.get("formats_supported") or [])
+        fmt_bonus = 0.0
+        if allowed:
+            if fmts & allowed:
+                fmt_bonus = -0.15  # reduce score (better)
+            else:
+                fmt_bonus = +0.25  # increase score (worse)
+
+        score = (1.0 / max(1e-6, cpu_units)) * (1.0 + derate) * (1.0 + fmt_bonus)
+        return max(0.0, score)
+
+    # -------- effective capacities/links --------
+
+    def _is_down(self, node: Dict[str, Any]) -> bool:
+        dyn = node.get("dyn") or {}
+        return bool(dyn.get("down", False))
+
+    def _effective_caps(self, node: Dict[str, Any]) -> Dict[str, float]:
+        caps = node.get("caps", {})
+        dyn = node.get("dyn", {})
+        derate = safe_float(dyn.get("thermal_derate"), 0.0)
+
+        max_cpu = safe_float(caps.get("max_cpu_cores"), 0.0)
+        max_mem = safe_float(caps.get("ram_gb"), 0.0)
+        max_vram = safe_float(caps.get("gpu_vram_gb"), 0.0)
+
+        # Thermal derate reduces effective usable CPU (you can make this fancier later)
+        eff_cpu = max_cpu * (1.0 - max(0.0, min(1.0, derate)))
+
+        used_cpu = safe_float(dyn.get("used_cpu_cores"), 0.0)
+        used_mem = safe_float(dyn.get("used_mem_gb"), 0.0)
+        used_vram = safe_float(dyn.get("used_gpu_vram_gb"), 0.0)
+
+        return {
+            "max_cpu_cores": max_cpu,
+            "max_mem_gb": max_mem,
+            "max_gpu_vram_gb": max_vram,
+            "free_cpu_cores": max(0.0, eff_cpu - used_cpu),
+            "free_mem_gb": max(0.0, max_mem - used_mem),
+            "free_gpu_vram_gb": max(0.0, max_vram - used_vram),
+        }
+
+    def _effective_link(self, link: Dict[str, Any]) -> Dict[str, Any]:
+        base = link.get("base", {}) or {}
+        dyn = link.get("dyn", {}) or {}
+
+        # Choose dyn override if set, else base, else topology defaults
+        def pick(key: str, default_key: Optional[str] = None, default_val: Optional[Any] = None):
+            if key in dyn and dyn[key] is not None:
+                return dyn[key]
+            if key in base and base[key] is not None:
+                return base[key]
+            if default_key:
+                # Look up defaults.network
+                netdef = (self.defaults.get("network") or {})
+                return netdef.get(default_key, default_val)
+            return default_val
+
+        eff = {
+            "down": bool(dyn.get("down", False)),
+            "speed_gbps": safe_float(pick("speed_gbps", "speed_gbps", 1.0), 1.0),
+            "rtt_ms": safe_float(pick("rtt_ms", "rtt_ms", 5.0), 5.0),
+            "jitter_ms": safe_float(pick("jitter_ms", "jitter_ms", 0.5), 0.5),
+            "loss_pct": safe_float(pick("loss_pct", "loss_pct", 0.0), 0.0),
+            "ecn": bool(pick("ecn", "ecn", False)),
+        }
+        return eff
+
+    # -------- disk persistence for overrides (optional) --------
+
+    def write_overrides(self) -> None:
+        """Persist current dyn states to sim/overrides.json (lossy for unknown fields)."""
+        with self._lock:
+            out = {"nodes": {}, "links": {}}
+            for name, n in self.nodes_by_name.items():
+                dyn = n.get("dyn") or {}
+                # Only write meaningful keys
+                nd = {}
+                for k in ("down", "power_cap_w", "thermal_derate", "clock_skew_ms",
+                          "packet_dup", "packet_reorder"):
+                    if k in dyn and dyn[k] not in (None, False, 0, 0.0):
+                        nd[k] = dyn[k]
+                if nd:
+                    out["nodes"][name] = nd
+
+            for k, l in self.links_by_key.items():
+                dyn = l.get("dyn") or {}
+                ld = {}
+                for kk in ("down", "speed_gbps", "rtt_ms", "jitter_ms", "loss_pct", "ecn"):
+                    if kk in dyn and dyn[kk] not in (None, False, 0, 0.0):
+                        ld[kk] = dyn[kk]
+                if ld:
+                    out["links"][k] = ld
+
+            try:
+                self.overrides_path.parent.mkdir(parents=True, exist_ok=True)
+                self.overrides_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+                self._overrides = out
+                self._overrides_mtime = self.overrides_path.stat().st_mtime
+            except Exception as e:
+                print(f"[state] WARN: failed to write overrides: {e}")
+
+
+# ----------------------------- manual test -----------------------------
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    st = DTState(auto_start_watchers=False)  # don't spawn watcher for a one-off test
+    snap = st.snapshot()
+    print(f"Loaded nodes: {len(snap['nodes'])}, links: {len(snap['links'])}")
+
+    # Reserve a tiny slice on the first node (if any)
+    if snap["nodes"]:
+        n0 = snap["nodes"][0]["name"]
+        rid = st.reserve({"node": n0, "cpu_cores": 1, "mem_gb": 2})
+        print("Reservation:", n0, rid)
+        if rid:
+            st.release(n0, rid)
+            print("Released:", rid)
 
