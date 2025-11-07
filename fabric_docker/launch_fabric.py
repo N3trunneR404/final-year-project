@@ -11,10 +11,12 @@ python3 -m fabric_docker.launch_fabric \
   --image alpine:3.20 \
   --prefix fab- \
   --tc none \
-  --force-arch   # (optional) ignore node.arch mismatch with host
+  --force-arch   # (optional) force Docker platform to node.arch even if host supports it
 
 Notes
 -----
+- Automatically attempts cross-architecture launches when binfmt handlers are present, and
+  warns when emulation support is missing.
 - Only approximates CPU/mem limits. GPUs are *not* plumbed here (future work).
 - Traffic shaping:
     --tc none         : no shaping (default)
@@ -28,7 +30,6 @@ Notes
 from __future__ import annotations
 import argparse
 import json
-import os
 import platform
 import sys
 import time
@@ -286,8 +287,15 @@ def main():
             cont = c
             break
         if cont is None:
-            print(f"[create] {cname}")
-            cont = client.containers.create(**spec)
+            try:
+                print(f"[create] {cname}")
+                cont = client.containers.create(**spec)
+            except docker.errors.APIError as e:
+                err = e.explanation or str(e)
+                skipped.append((ns.name, f"failed to create on {platform_arg or host_platform}: {err}"))
+                if needs_emulation and platform_arg:
+                    missing_binfmt.add(platform_arg)
+                continue
         # connect to network if not connected
         try:
             net.reload()
@@ -301,7 +309,17 @@ def main():
         # start
         if cont.status != "running":
             print(f"[start] {cname}")
-            cont.start()
+            try:
+                cont.start()
+            except docker.errors.APIError as e:
+                err = e.explanation or str(e)
+                skipped.append((ns.name, f"failed to start on {platform_arg or host_platform}: {err}"))
+                try:
+                    cont.remove(force=True)
+                except Exception:
+                    pass
+                # don't treat as created entry
+                continue
             # give it a moment to get eth0
             time.sleep(0.3)
 
@@ -326,6 +344,7 @@ def main():
             "labels": ns.labels,
             "formats": ns.formats,
             "network": args.network,
+            "platform": platform_arg or host_platform,
         })
 
     # write mapping
