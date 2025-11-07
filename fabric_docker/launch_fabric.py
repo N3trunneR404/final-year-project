@@ -34,7 +34,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -59,6 +59,10 @@ PLATFORM_MAP = {
     "arm64": "linux/arm64",
     "riscv64": "linux/riscv64",
 }
+BINFMT_ENTRY = {
+    "linux/arm64": "qemu-aarch64",
+    "linux/riscv64": "qemu-riscv64",
+}
 
 def load_yaml(p: Path) -> Any:
     with p.open("r", encoding="utf-8") as f:
@@ -74,6 +78,16 @@ def host_supports(arch: str) -> bool:
     a = arch.lower()
     host_list = ARCH_MAP.get(HOST_ARCH, [HOST_ARCH])
     return a in host_list
+
+
+def binfmt_ready_for(platform_tag: str) -> bool:
+    entry = BINFMT_ENTRY.get(platform_tag)
+    if not entry:
+        return True  # nothing special needed (either native or not tracked)
+    root = Path("/proc/sys/fs/binfmt_misc")
+    if not root.exists():
+        return False
+    return (root / entry).exists()
 
 @dataclass
 class NodeSpec:
@@ -248,6 +262,7 @@ def main():
 
     created = []
     skipped = []
+    missing_binfmt: Set[str] = set()
     host_platform = PLATFORM_MAP.get(HOST_ARCH, f"linux/{HOST_ARCH}")
 
     for ns in node_specs:
@@ -259,6 +274,8 @@ def main():
         platform_arg: Optional[str] = None
         if args.force_arch and target_platform and target_platform != host_platform:
             platform_arg = target_platform
+            if not binfmt_ready_for(platform_arg):
+                missing_binfmt.add(platform_arg)
 
         spec = build_container_spec(ns, args.image, args.prefix, platform=platform_arg)
 
@@ -320,6 +337,15 @@ def main():
     if skipped:
         for n, r in skipped:
             print(f" - {n}: {r}")
+        arch_skips = [1 for _, reason in skipped if "arch mismatch" in reason]
+        if arch_skips and not args.force_arch:
+            print("[hint] To run these anyway, re-launch with --force-arch (requires binfmt/qemu emulation).")
+            print("       Install handlers once with: docker run --privileged --rm tonistiigi/binfmt --install all")
+
+    if missing_binfmt:
+        plats = ", ".join(sorted(missing_binfmt))
+        print(f"[hint] binfmt entries for {plats} were not detected on this host.")
+        print("       Install them with: docker run --privileged --rm tonistiigi/binfmt --install all")
     print(f"Map written → {outp}")
 
 if __name__ == "__main__":
