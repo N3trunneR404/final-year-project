@@ -1,0 +1,110 @@
+name: grig-098
+class: gaming_rig
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 800
+  poe: false
+  battery_present: false
+  tdp_total_w: 825.73
+cpu:
+  uarch: P-core/E-core
+  isa_ext:
+  - aes
+  - avx2
+  - avx512
+  - sha
+  - sse4_2
+  cores: 16
+  base_ghz: 3.47
+  turbo_ghz: 5.26
+  tdp_w: 125.73
+  numa_nodes: 1
+memory:
+  ram_gb: 64
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie5
+  size_gb: 1024
+  tbw_pct_used: 60.78
+  smart_health: 0.95
+  qd_cap: 128
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: H100-SXM
+  vram_gb: 80
+  cuda_cores: 2048
+  tensor_cores: 64
+  rt_cores: 20
+  compute_capability: '9.0'
+  hbm_gb: 80
+  hbm_bw_tbps: 3.35
+  nvlink: true
+  tdp_w: 700
+  accel_score: 50.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 16
+network:
+  fabric: wifi
+  speed_gbps: 23.0
+  base_latency_ms: 17.48
+  base_bandwidth_mbps: 8049
+  jitter_ms: 8.48
+  loss_pct: 0.34
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11be
+  mlo: true
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: rackB
+  rack: B1
+  trust: '0.8'
+  wasm: disabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.13
+  last_week_crashes: 2
+  thermal_derate: 0.01
+  last_service_days: 480
+  temperature_c: 37.35
+  fan_fault: false
+data_locality: []

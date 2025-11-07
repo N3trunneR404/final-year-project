@@ -1,0 +1,104 @@
+name: sbc-061
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: raspbian
+  version: '24.04'
+  kernel: '6.1'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: true
+  battery_present: false
+  tdp_total_w: 10.01
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - sve
+  - sve2
+  cores: 4
+  base_ghz: 2.54
+  turbo_ghz: 2.32
+  tdp_w: 10.01
+  numa_nodes: 1
+memory:
+  ram_gb: 16
+  ecc: false
+  channels: 2
+  ddr_gen: ddr4
+storage:
+  type: microsd
+  interface_gen: null
+  size_gb: 64
+  tbw_pct_used: 49.55
+  smart_health: 0.96
+  qd_cap: 64
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 16
+network:
+  fabric: ethernet
+  speed_gbps: 100
+  base_latency_ms: 0.9
+  base_bandwidth_mbps: 100000
+  jitter_ms: 0.19
+  loss_pct: 0.01
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+formats_supported:
+- native
+- wasm
+labels:
+  zone: rackC
+  rack: A2
+  trust: '0.69'
+  wasm: enabled
+  owner: org
+health:
+  ram_errors_million_hours: 0.06
+  last_week_crashes: 0
+  thermal_derate: 0.06
+  last_service_days: 30
+  temperature_c: 42.58
+  fan_fault: false
+data_locality: []

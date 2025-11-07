@@ -1,0 +1,106 @@
+name: sbc-089
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.1'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 16.27
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - aes
+  - sve
+  cores: 4
+  base_ghz: 2.48
+  turbo_ghz: 2.16
+  tdp_w: 16.27
+  numa_nodes: 1
+memory:
+  ram_gb: 2
+  ecc: false
+  channels: 2
+  ddr_gen: lpddr5
+storage:
+  type: nvme
+  interface_gen: pcie3
+  size_gb: 128
+  tbw_pct_used: 11.15
+  smart_health: 0.93
+  qd_cap: 64
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: true
+  m2_socket: true
+  pcie_lanes: 4
+network:
+  fabric: wifi
+  speed_gbps: 23.0
+  base_latency_ms: 11.62
+  base_bandwidth_mbps: 8049
+  jitter_ms: 2.29
+  loss_pct: 0.26
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11be
+  mlo: true
+formats_supported:
+- native
+- wasm
+labels:
+  zone: rackB
+  rack: A2
+  trust: '0.93'
+  wasm: disabled
+  owner: dept
+health:
+  ram_errors_million_hours: 0.02
+  last_week_crashes: 2
+  thermal_derate: 0.08
+  last_service_days: 240
+  temperature_c: 38.5
+  fan_fault: false
+data_locality: []

@@ -1,0 +1,107 @@
+name: sbc-069
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: debian
+  version: '24.04'
+  kernel: '5.15'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 127.14
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - sha
+  - sve2
+  cores: 4
+  base_ghz: 2.29
+  turbo_ghz: 2.04
+  tdp_w: 12.14
+  numa_nodes: 1
+memory:
+  ram_gb: 16
+  ecc: false
+  channels: 2
+  ddr_gen: lpddr5
+storage:
+  type: nvme
+  interface_gen: pcie4
+  size_gb: 256
+  tbw_pct_used: 65.97
+  smart_health: 0.87
+  qd_cap: 256
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-4060
+  vram_gb: 8
+  cuda_cores: 3584
+  tensor_cores: 96
+  rt_cores: 20
+  compute_capability: '8.9'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 115
+  accel_score: 4.5
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 16
+network:
+  fabric: wifi
+  speed_gbps: 9.6
+  base_latency_ms: 17.28
+  base_bandwidth_mbps: 3360
+  jitter_ms: 2.81
+  loss_pct: 0.48
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11ax
+  mlo: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: lab
+  rack: A2
+  trust: '0.63'
+  wasm: disabled
+  owner: student
+health:
+  ram_errors_million_hours: 0.01
+  last_week_crashes: 0
+  thermal_derate: 0.02
+  last_service_days: 30
+  temperature_c: 41.86
+  fan_fault: false
+data_locality: []

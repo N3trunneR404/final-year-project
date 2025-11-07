@@ -1,0 +1,107 @@
+name: sbc-063
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: debian
+  version: '24.04'
+  kernel: '6.6'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 10.25
+cpu:
+  uarch: GoldenCove
+  isa_ext:
+  - aes
+  - sve
+  cores: 6
+  base_ghz: 1.72
+  turbo_ghz: 2.45
+  tdp_w: 10.25
+  numa_nodes: 1
+memory:
+  ram_gb: 4
+  ecc: false
+  channels: 4
+  ddr_gen: lpddr5
+storage:
+  type: microsd
+  interface_gen: null
+  size_gb: 128
+  tbw_pct_used: 67.28
+  smart_health: 1.0
+  qd_cap: 64
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: coral_usb
+  npu_tops: 4
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: false
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 16
+network:
+  fabric: wifi
+  speed_gbps: 3.5
+  base_latency_ms: 20.45
+  base_bandwidth_mbps: 1225
+  jitter_ms: 6.37
+  loss_pct: 0.8
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11ac
+  mlo: false
+formats_supported:
+- native
+- npu
+- wasm
+labels:
+  zone: rackB
+  rack: B1
+  trust: '0.93'
+  wasm: enabled
+  owner: org
+health:
+  ram_errors_million_hours: 0.06
+  last_week_crashes: 0
+  thermal_derate: 0.0
+  last_service_days: 60
+  temperature_c: 53.45
+  fan_fault: false
+data_locality: []

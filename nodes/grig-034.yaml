@@ -1,0 +1,110 @@
+name: grig-034
+class: gaming_rig
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 300
+  poe: false
+  battery_present: false
+  tdp_total_w: 245.66
+cpu:
+  uarch: Zen4
+  isa_ext:
+  - aes
+  - avx2
+  - avx512
+  - sha
+  - sse4_2
+  cores: 16
+  base_ghz: 3.92
+  turbo_ghz: 5.37
+  tdp_w: 75.66
+  numa_nodes: 1
+memory:
+  ram_gb: 32
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie5
+  size_gb: 2048
+  tbw_pct_used: 8.84
+  smart_health: 0.89
+  qd_cap: 128
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-3060
+  vram_gb: 12
+  cuda_cores: 16384
+  tensor_cores: 96
+  rt_cores: 28
+  compute_capability: '8.6'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 170
+  accel_score: 4.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: false
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 8
+network:
+  fabric: wifi
+  speed_gbps: 3.5
+  base_latency_ms: 9.36
+  base_bandwidth_mbps: 1225
+  jitter_ms: 7.29
+  loss_pct: 0.31
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11ac
+  mlo: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: home
+  rack: B2
+  trust: '0.83'
+  wasm: disabled
+  owner: dept
+health:
+  ram_errors_million_hours: 0.07
+  last_week_crashes: 2
+  thermal_derate: 0.02
+  last_service_days: 240
+  temperature_c: 29.99
+  fan_fault: false
+data_locality: []

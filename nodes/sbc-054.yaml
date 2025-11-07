@@ -1,0 +1,109 @@
+name: sbc-054
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: debian
+  version: '24.04'
+  kernel: '5.15'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 7.98
+cpu:
+  uarch: GoldenCove
+  isa_ext:
+  - aes
+  - neon
+  - sha
+  - sve
+  - sve2
+  cores: 4
+  base_ghz: 1.63
+  turbo_ghz: 2.75
+  tdp_w: 7.98
+  numa_nodes: 1
+memory:
+  ram_gb: 8
+  ecc: false
+  channels: 4
+  ddr_gen: lpddr5
+storage:
+  type: microsd
+  interface_gen: null
+  size_gb: 32
+  tbw_pct_used: 2.04
+  smart_health: 0.94
+  qd_cap: 64
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: true
+  m2_socket: true
+  pcie_lanes: 4
+network:
+  fabric: wifi
+  speed_gbps: 9.6
+  base_latency_ms: 16.09
+  base_bandwidth_mbps: 3360
+  jitter_ms: 5.51
+  loss_pct: 0.7
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11ax
+  mlo: false
+formats_supported:
+- native
+- wasm
+labels:
+  zone: lab
+  rack: A2
+  trust: '0.86'
+  wasm: enabled
+  owner: student
+health:
+  ram_errors_million_hours: 0.01
+  last_week_crashes: 1
+  thermal_derate: 0.01
+  last_service_days: 30
+  temperature_c: 29.06
+  fan_fault: false
+data_locality: []

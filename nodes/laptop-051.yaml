@@ -1,0 +1,110 @@
+name: laptop-051
+class: laptop
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: true
+  tdp_total_w: 20.33
+cpu:
+  uarch: NeoverseV1
+  isa_ext:
+  - aes
+  - avx2
+  - avx512
+  - sha
+  - sse4_2
+  cores: 8
+  base_ghz: 2.74
+  turbo_ghz: 3.98
+  tdp_w: 20.33
+  numa_nodes: 1
+memory:
+  ram_gb: 8
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie4
+  size_gb: 512
+  tbw_pct_used: 9.72
+  smart_health: 0.9
+  qd_cap: 256
+battery:
+  present: true
+  level_pct: 80
+  cycles: 145
+  health_pct: 89
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: coral_usb
+  npu_tops: 4
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 4
+network:
+  fabric: wifi
+  speed_gbps: 9.6
+  base_latency_ms: 20.94
+  base_bandwidth_mbps: 3360
+  jitter_ms: 2.82
+  loss_pct: 0.09
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11ax
+  mlo: false
+formats_supported:
+- native
+- npu
+- wasm
+labels:
+  zone: rackA
+  rack: B2
+  trust: '0.9'
+  wasm: enabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.08
+  last_week_crashes: 2
+  thermal_derate: 0.05
+  last_service_days: 240
+  temperature_c: 32.85
+  fan_fault: false
+data_locality: []

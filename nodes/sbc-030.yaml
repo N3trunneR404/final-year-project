@@ -1,0 +1,107 @@
+name: sbc-030
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: debian
+  version: '24.04'
+  kernel: '6.1'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 132.92000000000002
+cpu:
+  uarch: Zen4
+  isa_ext:
+  - neon
+  - sha
+  - sve
+  - sve2
+  cores: 8
+  base_ghz: 1.93
+  turbo_ghz: 2.2
+  tdp_w: 17.92
+  numa_nodes: 1
+memory:
+  ram_gb: 4
+  ecc: false
+  channels: 4
+  ddr_gen: ddr5
+storage:
+  type: microsd
+  interface_gen: null
+  size_gb: 128
+  tbw_pct_used: 15.86
+  smart_health: 0.87
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-4060
+  vram_gb: 8
+  cuda_cores: 16384
+  tensor_cores: 64
+  rt_cores: 24
+  compute_capability: '8.9'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 115
+  accel_score: 4.5
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 8
+network:
+  fabric: ethernet
+  speed_gbps: 10
+  base_latency_ms: 0.6
+  base_bandwidth_mbps: 10000
+  jitter_ms: 0.2
+  loss_pct: 0.03
+  ecn: true
+  mtu_bytes: 1500
+  rocev2: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: rackB
+  rack: C1
+  trust: '0.98'
+  wasm: enabled
+  owner: org
+health:
+  ram_errors_million_hours: 0.05
+  last_week_crashes: 2
+  thermal_derate: 0.08
+  last_service_days: 60
+  temperature_c: 59.5
+  fan_fault: false
+data_locality: []

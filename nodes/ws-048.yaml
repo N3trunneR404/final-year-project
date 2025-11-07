@@ -1,0 +1,108 @@
+name: ws-048
+class: workstation
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 65
+  poe: false
+  battery_present: false
+  tdp_total_w: 127.54
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - aes
+  - avx2
+  - avx512
+  - sha
+  - sse4_2
+  cores: 24
+  base_ghz: 3.45
+  turbo_ghz: 5.38
+  tdp_w: 112.54
+  numa_nodes: 1
+memory:
+  ram_gb: 32
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie5
+  size_gb: 2048
+  tbw_pct_used: 0.46
+  smart_health: 0.93
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: Jetson Orin
+  vram_gb: 8
+  cuda_cores: 16384
+  tensor_cores: 112
+  rt_cores: 0
+  compute_capability: '8.7'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 15
+  accel_score: 4.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 8
+network:
+  fabric: ethernet
+  speed_gbps: 2.5
+  base_latency_ms: 1.39
+  base_bandwidth_mbps: 2500.0
+  jitter_ms: 0.17
+  loss_pct: 0.03
+  ecn: true
+  mtu_bytes: 1500
+  rocev2: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: edge
+  rack: A2
+  trust: '0.63'
+  wasm: enabled
+  owner: student
+health:
+  ram_errors_million_hours: 0.1
+  last_week_crashes: 0
+  thermal_derate: 0.11
+  last_service_days: 30
+  temperature_c: 47.38
+  fan_fault: false
+data_locality: []

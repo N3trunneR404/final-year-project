@@ -1,0 +1,107 @@
+name: srv-020
+class: server
+arch: arm64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: containerd
+power:
+  supply_w: 300
+  poe: false
+  battery_present: false
+  tdp_total_w: 340.94
+cpu:
+  uarch: Zen3
+  isa_ext:
+  - aes
+  - neon
+  - sha
+  - sve
+  cores: 64
+  base_ghz: 2.58
+  turbo_ghz: 3.98
+  tdp_w: 180.94
+  numa_nodes: 1
+memory:
+  ram_gb: 512
+  ecc: false
+  channels: 4
+  ddr_gen: ddr5
+storage:
+  type: zns
+  interface_gen: pcie4
+  size_gb: 8192
+  tbw_pct_used: 26.24
+  smart_health: 0.87
+  qd_cap: 256
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-5060-Ti
+  vram_gb: 16
+  cuda_cores: 3072
+  tensor_cores: 96
+  rt_cores: 0
+  compute_capability: '9.0'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 160
+  accel_score: 8.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: true
+  m2_socket: false
+  pcie_lanes: 32
+network:
+  fabric: ethernet
+  speed_gbps: 10
+  base_latency_ms: 1.01
+  base_bandwidth_mbps: 10000
+  jitter_ms: 0.27
+  loss_pct: 0.02
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: lab
+  rack: C2
+  trust: '0.89'
+  wasm: enabled
+  owner: org
+health:
+  ram_errors_million_hours: 0.01
+  last_week_crashes: 0
+  thermal_derate: 0.04
+  last_service_days: 60
+  temperature_c: 63.1
+  fan_fault: false
+data_locality: []

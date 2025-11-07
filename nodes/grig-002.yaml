@@ -1,0 +1,108 @@
+name: grig-002
+class: gaming_rig
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 120
+  poe: false
+  battery_present: false
+  tdp_total_w: 430.47
+cpu:
+  uarch: P-core/E-core
+  isa_ext:
+  - avx2
+  - sha
+  - sse4_2
+  cores: 12
+  base_ghz: 3.88
+  turbo_ghz: 5.68
+  tdp_w: 180.47
+  numa_nodes: 1
+memory:
+  ram_gb: 16
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie5
+  size_gb: 1024
+  tbw_pct_used: 56.35
+  smart_health: 0.91
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: amd
+  model: RX-6800
+  vram_gb: 16
+  cuda_cores: 3072
+  tensor_cores: 528
+  rt_cores: 28
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 250
+  accel_score: 6.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: false
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 8
+network:
+  fabric: wifi
+  speed_gbps: 23.0
+  base_latency_ms: 22.18
+  base_bandwidth_mbps: 8049
+  jitter_ms: 3.3
+  loss_pct: 0.36
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11be
+  mlo: true
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: rackB
+  rack: B2
+  trust: '0.69'
+  wasm: disabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.1
+  last_week_crashes: 1
+  thermal_derate: 0.08
+  last_service_days: 30
+  temperature_c: 56.63
+  fan_fault: false
+data_locality: []

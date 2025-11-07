@@ -1,0 +1,108 @@
+name: sbc-070
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.1'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 126.05
+cpu:
+  uarch: GoldenCove
+  isa_ext:
+  - neon
+  - sha
+  - sve
+  cores: 8
+  base_ghz: 2.42
+  turbo_ghz: 2.12
+  tdp_w: 11.05
+  numa_nodes: 1
+memory:
+  ram_gb: 16
+  ecc: false
+  channels: 4
+  ddr_gen: lpddr5
+storage:
+  type: microsd
+  interface_gen: null
+  size_gb: 128
+  tbw_pct_used: 18.44
+  smart_health: 0.98
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-4060
+  vram_gb: 8
+  cuda_cores: 2048
+  tensor_cores: 112
+  rt_cores: 80
+  compute_capability: '8.9'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 115
+  accel_score: 4.5
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: true
+  m2_socket: true
+  pcie_lanes: 32
+network:
+  fabric: wifi
+  speed_gbps: 3.5
+  base_latency_ms: 9.65
+  base_bandwidth_mbps: 1225
+  jitter_ms: 3.66
+  loss_pct: 0.64
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11ac
+  mlo: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: home
+  rack: C1
+  trust: '0.63'
+  wasm: disabled
+  owner: student
+health:
+  ram_errors_million_hours: 0.02
+  last_week_crashes: 0
+  thermal_derate: 0.06
+  last_service_days: 240
+  temperature_c: 50.13
+  fan_fault: false
+data_locality: []

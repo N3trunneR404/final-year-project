@@ -1,0 +1,107 @@
+name: sbc-017
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: raspbian
+  version: '24.04'
+  kernel: '6.6'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 707.0
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - neon
+  - sve2
+  cores: 4
+  base_ghz: 2.5
+  turbo_ghz: 2.66
+  tdp_w: 7.0
+  numa_nodes: 1
+memory:
+  ram_gb: 4
+  ecc: false
+  channels: 2
+  ddr_gen: lpddr5
+storage:
+  type: nvme
+  interface_gen: pcie4
+  size_gb: 512
+  tbw_pct_used: 36.33
+  smart_health: 0.92
+  qd_cap: 128
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: H100-SXM
+  vram_gb: 80
+  cuda_cores: 4352
+  tensor_cores: 64
+  rt_cores: 28
+  compute_capability: '9.0'
+  hbm_gb: 80
+  hbm_bw_tbps: 3.35
+  nvlink: true
+  tdp_w: 700
+  accel_score: 50.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 16
+network:
+  fabric: wifi
+  speed_gbps: 3.5
+  base_latency_ms: 15.97
+  base_bandwidth_mbps: 1225
+  jitter_ms: 4.43
+  loss_pct: 0.4
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11ac
+  mlo: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: rackB
+  rack: B1
+  trust: '0.72'
+  wasm: enabled
+  owner: dept
+health:
+  ram_errors_million_hours: 0.07
+  last_week_crashes: 1
+  thermal_derate: 0.06
+  last_service_days: 30
+  temperature_c: 56.11
+  fan_fault: false
+data_locality: []

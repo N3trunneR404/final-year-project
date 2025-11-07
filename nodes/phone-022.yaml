@@ -1,0 +1,108 @@
+name: phone-022
+class: phone
+arch: arm64
+role: worker
+os:
+  distro: postmarketOS
+  version: stable
+  kernel: '6.6'
+  container_runtime: podman
+power:
+  supply_w: 15
+  poe: false
+  battery_present: true
+  tdp_total_w: 8.48
+cpu:
+  uarch: Zen4
+  isa_ext:
+  - aes
+  - neon
+  - sha
+  - sve
+  - sve2
+  cores: 4
+  base_ghz: 1.87
+  turbo_ghz: 2.58
+  tdp_w: 8.48
+  numa_nodes: 1
+memory:
+  ram_gb: 6
+  ecc: false
+  channels: 2
+  ddr_gen: lpddr4
+storage:
+  type: emmc
+  interface_gen: null
+  size_gb: 64
+  tbw_pct_used: 40.92
+  smart_health: 0.97
+  qd_cap: 128
+battery:
+  present: true
+  level_pct: 19
+  cycles: 194
+  health_pct: 94
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: coral_usb
+  npu_tops: 4
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 16
+network:
+  fabric: ethernet
+  speed_gbps: 40
+  base_latency_ms: 1.34
+  base_bandwidth_mbps: 40000
+  jitter_ms: 0.12
+  loss_pct: 0.03
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+formats_supported:
+- native
+- npu
+- wasm
+labels:
+  zone: edge
+  rack: C2
+  trust: '0.93'
+  wasm: disabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.04
+  last_week_crashes: 2
+  thermal_derate: 0.12
+  last_service_days: 120
+  temperature_c: 65.8
+  fan_fault: false
+data_locality: []

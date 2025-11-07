@@ -1,0 +1,109 @@
+name: hpc-053
+class: hpc
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: containerd
+power:
+  supply_w: 800
+  poe: false
+  battery_present: false
+  tdp_total_w: 1024.12
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - aes
+  - avx2
+  - avx512
+  - sha
+  - sse4_2
+  cores: 96
+  base_ghz: 3.03
+  turbo_ghz: 3.07
+  tdp_w: 324.12
+  numa_nodes: 1
+memory:
+  ram_gb: 1024
+  ecc: true
+  channels: 8
+  ddr_gen: ddr5
+storage:
+  type: sata
+  interface_gen: null
+  size_gb: 8192
+  tbw_pct_used: 26.59
+  smart_health: 0.87
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: H100-SXM
+  vram_gb: 80
+  cuda_cores: 3584
+  tensor_cores: 528
+  rt_cores: 0
+  compute_capability: '9.0'
+  hbm_gb: 80
+  hbm_bw_tbps: 3.35
+  nvlink: true
+  tdp_w: 700
+  accel_score: 50.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: agilex7
+  fpga_hbm_gb: 32
+  fpga_net_gbps: 100
+  fpga_bitstream: regex_accel
+  fpga_toolchain: oneapi_2024.1
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 4
+network:
+  fabric: infiniband
+  speed_gbps: 400
+  base_latency_ms: 0.05
+  base_bandwidth_mbps: 400000
+  jitter_ms: 0.01
+  loss_pct: 0.0
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: false
+formats_supported:
+- cuda
+- fpga
+- native
+- wasm
+labels:
+  zone: rackC
+  rack: B2
+  trust: '0.74'
+  wasm: disabled
+  owner: org
+health:
+  ram_errors_million_hours: 0.02
+  last_week_crashes: 0
+  thermal_derate: 0.01
+  last_service_days: 120
+  temperature_c: 58.96
+  fan_fault: false
+data_locality: []

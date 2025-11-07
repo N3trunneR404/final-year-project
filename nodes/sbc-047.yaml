@@ -1,0 +1,104 @@
+name: sbc-047
+class: sbc
+arch: riscv64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '5.15'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 19.12
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - aes
+  - sha
+  cores: 6
+  base_ghz: 2.55
+  turbo_ghz: 2.01
+  tdp_w: 19.12
+  numa_nodes: 1
+memory:
+  ram_gb: 2
+  ecc: false
+  channels: 2
+  ddr_gen: lpddr5
+storage:
+  type: nvme
+  interface_gen: pcie3
+  size_gb: 256
+  tbw_pct_used: 20.66
+  smart_health: 0.88
+  qd_cap: 64
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 16
+network:
+  fabric: ethernet
+  speed_gbps: 25
+  base_latency_ms: 1.39
+  base_bandwidth_mbps: 25000
+  jitter_ms: 0.17
+  loss_pct: 0.04
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: false
+formats_supported:
+- native
+- wasm
+labels:
+  zone: rackC
+  rack: A2
+  trust: '0.92'
+  wasm: disabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.07
+  last_week_crashes: 1
+  thermal_derate: 0.06
+  last_service_days: 30
+  temperature_c: 65.73
+  fan_fault: false
+data_locality: []

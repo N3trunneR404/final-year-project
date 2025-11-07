@@ -1,0 +1,113 @@
+name: srv-041
+class: server
+arch: arm64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: containerd
+power:
+  supply_w: 65
+  poe: false
+  battery_present: false
+  tdp_total_w: 418.55
+cpu:
+  uarch: GoldenCove
+  isa_ext:
+  - aes
+  - neon
+  - sha
+  - sve
+  - sve2
+  cores: 64
+  base_ghz: 2.43
+  turbo_ghz: 3.43
+  tdp_w: 248.55
+  numa_nodes: 2
+memory:
+  ram_gb: 256
+  ecc: false
+  channels: 4
+  ddr_gen: ddr5
+storage:
+  type: sata
+  interface_gen: null
+  size_gb: 4096
+  tbw_pct_used: 45.54
+  smart_health: 0.96
+  qd_cap: 128
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-3060
+  vram_gb: 12
+  cuda_cores: 2048
+  tensor_cores: 96
+  rt_cores: 80
+  compute_capability: '8.6'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 170
+  accel_score: 4.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: bluefield3
+  ports_gbps: 200
+  protocol: rocev2
+  offloads:
+  - telemetry
+  - vxlan
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 16
+network:
+  fabric: ethernet
+  speed_gbps: 100
+  base_latency_ms: 0.82
+  base_bandwidth_mbps: 100000
+  jitter_ms: 0.08
+  loss_pct: 0.03
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: true
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: edge
+  rack: A1
+  trust: '0.84'
+  wasm: enabled
+  owner: org
+health:
+  ram_errors_million_hours: 0.03
+  last_week_crashes: 0
+  thermal_derate: 0.04
+  last_service_days: 60
+  temperature_c: 30.39
+  fan_fault: false
+data_locality: []

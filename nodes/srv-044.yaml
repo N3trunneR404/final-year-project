@@ -1,0 +1,106 @@
+name: srv-044
+class: server
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: containerd
+power:
+  supply_w: 300
+  poe: false
+  battery_present: false
+  tdp_total_w: 981.8
+cpu:
+  uarch: NeoverseV1
+  isa_ext:
+  - sha
+  - sse4_2
+  cores: 32
+  base_ghz: 2.77
+  turbo_ghz: 3.59
+  tdp_w: 281.8
+  numa_nodes: 1
+memory:
+  ram_gb: 512
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: zns
+  interface_gen: pcie4
+  size_gb: 2048
+  tbw_pct_used: 53.61
+  smart_health: 1.0
+  qd_cap: 256
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: H100-SXM
+  vram_gb: 80
+  cuda_cores: 4352
+  tensor_cores: 528
+  rt_cores: 28
+  compute_capability: '9.0'
+  hbm_gb: 80
+  hbm_bw_tbps: 3.35
+  nvlink: true
+  tdp_w: 700
+  accel_score: 50.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: other
+  fpga_hbm_gb: 8
+  fpga_net_gbps: 200
+  fpga_bitstream: graph_analytics_v1
+  fpga_toolchain: vitis_2024.2
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 4
+network:
+  fabric: ethernet
+  speed_gbps: 40
+  base_latency_ms: 0.74
+  base_bandwidth_mbps: 40000
+  jitter_ms: 0.18
+  loss_pct: 0.03
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: false
+formats_supported:
+- cuda
+- fpga
+- native
+- wasm
+labels:
+  zone: home
+  rack: C1
+  trust: '0.87'
+  wasm: enabled
+  owner: dept
+health:
+  ram_errors_million_hours: 0.04
+  last_week_crashes: 0
+  thermal_derate: 0.02
+  last_service_days: 60
+  temperature_c: 55.18
+  fan_fault: false
+data_locality: []

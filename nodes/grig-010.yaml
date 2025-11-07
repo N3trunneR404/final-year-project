@@ -1,0 +1,109 @@
+name: grig-010
+class: gaming_rig
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 800
+  poe: false
+  battery_present: false
+  tdp_total_w: 906.44
+cpu:
+  uarch: NeoverseN2
+  isa_ext:
+  - avx2
+  - avx512
+  - sha
+  - sse4_2
+  cores: 12
+  base_ghz: 3.39
+  turbo_ghz: 5.63
+  tdp_w: 156.44
+  numa_nodes: 1
+memory:
+  ram_gb: 32
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie5
+  size_gb: 2048
+  tbw_pct_used: 56.46
+  smart_health: 0.87
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: amd
+  model: MI300X
+  vram_gb: 192
+  cuda_cores: 16384
+  tensor_cores: 64
+  rt_cores: 28
+  compute_capability: ''
+  hbm_gb: 192
+  hbm_bw_tbps: 5.32
+  nvlink: false
+  tdp_w: 750
+  accel_score: 48.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 32
+network:
+  fabric: wifi
+  speed_gbps: 23.0
+  base_latency_ms: 22.17
+  base_bandwidth_mbps: 8049
+  jitter_ms: 4.43
+  loss_pct: 0.21
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11be
+  mlo: true
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: rackC
+  rack: C2
+  trust: '0.88'
+  wasm: enabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.07
+  last_week_crashes: 1
+  thermal_derate: 0.06
+  last_service_days: 60
+  temperature_c: 52.03
+  fan_fault: false
+data_locality: []

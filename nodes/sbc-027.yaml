@@ -1,0 +1,108 @@
+name: sbc-027
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: raspbian
+  version: '24.04'
+  kernel: '6.1'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 11.94
+cpu:
+  uarch: P-core/E-core
+  isa_ext:
+  - aes
+  - neon
+  - sha
+  - sve
+  - sve2
+  cores: 8
+  base_ghz: 1.59
+  turbo_ghz: 2.35
+  tdp_w: 11.94
+  numa_nodes: 1
+memory:
+  ram_gb: 16
+  ecc: false
+  channels: 2
+  ddr_gen: lpddr5
+storage:
+  type: microsd
+  interface_gen: null
+  size_gb: 32
+  tbw_pct_used: 60.32
+  smart_health: 0.86
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: ncs2
+  npu_tops: 4
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 32
+network:
+  fabric: ethernet
+  speed_gbps: 10
+  base_latency_ms: 0.76
+  base_bandwidth_mbps: 10000
+  jitter_ms: 0.1
+  loss_pct: 0.03
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: true
+formats_supported:
+- native
+- npu
+- wasm
+labels:
+  zone: edge
+  rack: B1
+  trust: '0.89'
+  wasm: disabled
+  owner: dept
+health:
+  ram_errors_million_hours: 0.01
+  last_week_crashes: 2
+  thermal_derate: 0.12
+  last_service_days: 60
+  temperature_c: 42.17
+  fan_fault: false
+data_locality: []

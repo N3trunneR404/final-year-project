@@ -1,0 +1,107 @@
+name: grig-006
+class: gaming_rig
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 300
+  poe: false
+  battery_present: false
+  tdp_total_w: 310.78
+cpu:
+  uarch: NeoverseV1
+  isa_ext:
+  - aes
+  - avx512
+  - sha
+  - sse4_2
+  cores: 24
+  base_ghz: 3.02
+  turbo_ghz: 4.86
+  tdp_w: 195.78
+  numa_nodes: 1
+memory:
+  ram_gb: 16
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie5
+  size_gb: 2048
+  tbw_pct_used: 18.59
+  smart_health: 0.87
+  qd_cap: 128
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-4060
+  vram_gb: 8
+  cuda_cores: 2048
+  tensor_cores: 528
+  rt_cores: 80
+  compute_capability: '8.9'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 115
+  accel_score: 4.5
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: false
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 8
+network:
+  fabric: ethernet
+  speed_gbps: 1
+  base_latency_ms: 0.96
+  base_bandwidth_mbps: 1000
+  jitter_ms: 0.16
+  loss_pct: 0.04
+  ecn: true
+  mtu_bytes: 1500
+  rocev2: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: rackA
+  rack: C1
+  trust: '0.69'
+  wasm: enabled
+  owner: dept
+health:
+  ram_errors_million_hours: 0.1
+  last_week_crashes: 0
+  thermal_derate: 0.07
+  last_service_days: 60
+  temperature_c: 46.98
+  fan_fault: false
+data_locality: []

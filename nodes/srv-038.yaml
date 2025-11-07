@@ -1,0 +1,105 @@
+name: srv-038
+class: server
+arch: arm64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: containerd
+power:
+  supply_w: 120
+  poe: false
+  battery_present: false
+  tdp_total_w: 898.6800000000001
+cpu:
+  uarch: GoldenCove
+  isa_ext:
+  - neon
+  - sha
+  cores: 96
+  base_ghz: 2.78
+  turbo_ghz: 3.35
+  tdp_w: 148.68
+  numa_nodes: 4
+memory:
+  ram_gb: 512
+  ecc: true
+  channels: 8
+  ddr_gen: ddr5
+storage:
+  type: zns
+  interface_gen: pcie4
+  size_gb: 8192
+  tbw_pct_used: 13.63
+  smart_health: 0.93
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: amd
+  model: MI300X
+  vram_gb: 192
+  cuda_cores: 16384
+  tensor_cores: 112
+  rt_cores: 80
+  compute_capability: ''
+  hbm_gb: 192
+  hbm_bw_tbps: 5.32
+  nvlink: false
+  tdp_w: 750
+  accel_score: 48.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 8
+network:
+  fabric: ethernet
+  speed_gbps: 1
+  base_latency_ms: 0.32
+  base_bandwidth_mbps: 1000
+  jitter_ms: 0.13
+  loss_pct: 0.02
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: true
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: lab
+  rack: B1
+  trust: '0.76'
+  wasm: disabled
+  owner: org
+health:
+  ram_errors_million_hours: 0.03
+  last_week_crashes: 0
+  thermal_derate: 0.02
+  last_service_days: 240
+  temperature_c: 41.43
+  fan_fault: true
+data_locality: []

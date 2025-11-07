@@ -1,0 +1,107 @@
+name: sbc-037
+class: sbc
+arch: riscv64
+role: worker
+os:
+  distro: debian
+  version: '24.04'
+  kernel: '6.1'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 14.01
+cpu:
+  uarch: P-core/E-core
+  isa_ext:
+  - aes
+  - sha
+  cores: 8
+  base_ghz: 1.79
+  turbo_ghz: 2.17
+  tdp_w: 14.01
+  numa_nodes: 1
+memory:
+  ram_gb: 2
+  ecc: false
+  channels: 2
+  ddr_gen: ddr4
+storage:
+  type: microsd
+  interface_gen: null
+  size_gb: 128
+  tbw_pct_used: 22.34
+  smart_health: 0.92
+  qd_cap: 128
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: coral_usb
+  npu_tops: 4
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: false
+  pcie_lanes: 8
+network:
+  fabric: wifi
+  speed_gbps: 23.0
+  base_latency_ms: 24.26
+  base_bandwidth_mbps: 8049
+  jitter_ms: 5.86
+  loss_pct: 0.8
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+  wifi_standard: 802.11be
+  mlo: true
+formats_supported:
+- native
+- npu
+- wasm
+labels:
+  zone: cloudlet
+  rack: C1
+  trust: '0.68'
+  wasm: enabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.01
+  last_week_crashes: 2
+  thermal_derate: 0.04
+  last_service_days: 30
+  temperature_c: 35.43
+  fan_fault: false
+data_locality: []

@@ -1,0 +1,107 @@
+name: sbc-068
+class: sbc
+arch: arm64
+role: worker
+os:
+  distro: debian
+  version: '24.04'
+  kernel: '6.6'
+  container_runtime: docker
+power:
+  supply_w: 15
+  poe: false
+  battery_present: false
+  tdp_total_w: 15.09
+cpu:
+  uarch: Zen4
+  isa_ext:
+  - aes
+  - neon
+  - sha
+  - sve
+  - sve2
+  cores: 6
+  base_ghz: 2.37
+  turbo_ghz: 2.77
+  tdp_w: 15.09
+  numa_nodes: 1
+memory:
+  ram_gb: 4
+  ecc: false
+  channels: 2
+  ddr_gen: lpddr4
+storage:
+  type: nvme
+  interface_gen: pcie4
+  size_gb: 512
+  tbw_pct_used: 11.75
+  smart_health: 0.98
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: none
+  vendor: none
+  model: none
+  vram_gb: 0
+  cuda_cores: 0
+  tensor_cores: 0
+  rt_cores: 0
+  compute_capability: ''
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 0
+  accel_score: 0.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: true
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 8
+network:
+  fabric: ethernet
+  speed_gbps: 100
+  base_latency_ms: 0.97
+  base_bandwidth_mbps: 100000
+  jitter_ms: 0.07
+  loss_pct: 0.02
+  ecn: false
+  mtu_bytes: 1500
+  rocev2: false
+formats_supported:
+- native
+- wasm
+labels:
+  zone: rackA
+  rack: C1
+  trust: '0.61'
+  wasm: disabled
+  owner: student
+health:
+  ram_errors_million_hours: 0.14
+  last_week_crashes: 0
+  thermal_derate: 0.11
+  last_service_days: 240
+  temperature_c: 67.99
+  fan_fault: false
+data_locality: []

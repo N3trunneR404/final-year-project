@@ -1,0 +1,105 @@
+name: grig-064
+class: gaming_rig
+arch: amd64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: docker
+power:
+  supply_w: 300
+  poe: false
+  battery_present: false
+  tdp_total_w: 159.91
+cpu:
+  uarch: NeoverseV1
+  isa_ext:
+  - aes
+  - sse4_2
+  cores: 12
+  base_ghz: 3.69
+  turbo_ghz: 4.97
+  tdp_w: 144.91
+  numa_nodes: 1
+memory:
+  ram_gb: 16
+  ecc: false
+  channels: 2
+  ddr_gen: ddr5
+storage:
+  type: nvme
+  interface_gen: pcie4
+  size_gb: 1024
+  tbw_pct_used: 31.63
+  smart_health: 0.92
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: Jetson Orin
+  vram_gb: 8
+  cuda_cores: 16384
+  tensor_cores: 64
+  rt_cores: 20
+  compute_capability: '8.7'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 15
+  accel_score: 4.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: none
+  fpga_hbm_gb: 0
+  fpga_net_gbps: 0
+  fpga_bitstream: ''
+  fpga_toolchain: ''
+  asic_kind: none
+  asic_memory_gb: 0
+  asic_interconnect: none
+  asic_dtypes: []
+dpu:
+  type: none
+cxl:
+  type: none
+io:
+  has_usb3: false
+  csi_cam: false
+  m2_socket: true
+  pcie_lanes: 8
+network:
+  fabric: ethernet
+  speed_gbps: 10
+  base_latency_ms: 0.54
+  base_bandwidth_mbps: 10000
+  jitter_ms: 0.11
+  loss_pct: 0.04
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: false
+formats_supported:
+- cuda
+- native
+- wasm
+labels:
+  zone: edge
+  rack: B2
+  trust: '0.64'
+  wasm: disabled
+  owner: lab
+health:
+  ram_errors_million_hours: 0.14
+  last_week_crashes: 1
+  thermal_derate: 0.03
+  last_service_days: 60
+  temperature_c: 64.66
+  fan_fault: false
+data_locality: []

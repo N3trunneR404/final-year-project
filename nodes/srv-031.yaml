@@ -1,0 +1,115 @@
+name: srv-031
+class: server
+arch: arm64
+role: worker
+os:
+  distro: ubuntu
+  version: '24.04'
+  kernel: '6.8'
+  container_runtime: containerd
+power:
+  supply_w: 800
+  poe: false
+  battery_present: false
+  tdp_total_w: 345.57
+cpu:
+  uarch: Zen3
+  isa_ext:
+  - aes
+  - neon
+  - sve2
+  cores: 64
+  base_ghz: 2.78
+  turbo_ghz: 3.23
+  tdp_w: 185.57
+  numa_nodes: 2
+memory:
+  ram_gb: 128
+  ecc: false
+  channels: 4
+  ddr_gen: ddr5
+storage:
+  type: sata
+  interface_gen: null
+  size_gb: 4096
+  tbw_pct_used: 38.82
+  smart_health: 0.87
+  qd_cap: 32
+battery:
+  present: false
+  level_pct: 100
+  cycles: 0
+  health_pct: 100
+gpu:
+  type: real
+  vendor: nvidia
+  model: RTX-5060-Ti
+  vram_gb: 16
+  cuda_cores: 3584
+  tensor_cores: 528
+  rt_cores: 80
+  compute_capability: '9.0'
+  hbm_gb: 0
+  hbm_bw_tbps: 0.0
+  nvlink: false
+  tdp_w: 160
+  accel_score: 8.0
+accelerators:
+  npu: none
+  npu_tops: 0
+  jetson_cuda: false
+  fpga_card: agilex7
+  fpga_hbm_gb: 16
+  fpga_net_gbps: 200
+  fpga_bitstream: graph_analytics_v1
+  fpga_toolchain: oneapi_2024.1
+  asic_kind: inferentia2
+  asic_memory_gb: 32
+  asic_interconnect: neuronlink
+  asic_dtypes:
+  - fp16
+  - bf16
+  - fp8
+  - fp32
+dpu:
+  type: none
+cxl:
+  type: type3_memory
+  capacity_gb: 256
+  link_gtps: 64
+  added_ns_latency: 120
+io:
+  has_usb3: true
+  csi_cam: true
+  m2_socket: false
+  pcie_lanes: 8
+network:
+  fabric: ethernet
+  speed_gbps: 100
+  base_latency_ms: 1.22
+  base_bandwidth_mbps: 100000
+  jitter_ms: 0.09
+  loss_pct: 0.01
+  ecn: false
+  mtu_bytes: 9000
+  rocev2: false
+formats_supported:
+- asic
+- cuda
+- fpga
+- native
+- wasm
+labels:
+  zone: home
+  rack: C1
+  trust: '0.9'
+  wasm: disabled
+  owner: student
+health:
+  ram_errors_million_hours: 0.03
+  last_week_crashes: 0
+  thermal_derate: 0.01
+  last_service_days: 480
+  temperature_c: 74.27
+  fan_fault: false
+data_locality: []
