@@ -82,6 +82,45 @@ class FederatedPlanner:
         self.state = state
         self.cm = cost_model
 
+    def _adaptive_mode_cfg(self, base_cfg: ModeConfig, job: Dict[str, Any]) -> ModeConfig:
+        cfg = dict(base_cfg)
+        overview = self.state.predictive_overview()
+
+        link_metrics = overview.get("links", {}) or {}
+        latencies = [safe_float(v.get("latency_ms"), 0.0) for v in link_metrics.values() if v.get("latency_ms")]
+        losses = [safe_float(v.get("loss_pct"), 0.0) for v in link_metrics.values() if v.get("loss_pct")]
+
+        if latencies:
+            avg_latency = sum(latencies) / max(1, len(latencies))
+            if avg_latency > 20.0:
+                cfg["network_weight"] = safe_float(cfg.get("network_weight"), 1.0) * 1.25
+                cfg["spread_weight"] = safe_float(cfg.get("spread_weight"), 1.0) * 1.1
+        if losses:
+            avg_loss = sum(losses) / max(1, len(losses))
+            if avg_loss > 1.5:
+                cfg["resilience_weight"] = safe_float(cfg.get("resilience_weight"), 1.0) * 1.2
+
+        node_metrics = overview.get("nodes", {}) or {}
+        reliabilities = []
+        availability_windows = []
+        for entry in node_metrics.values():
+            if entry.get("reliability") is not None:
+                reliabilities.append(safe_float(entry.get("reliability"), 1.0))
+            if entry.get("availability_window_sec") is not None:
+                availability_windows.append(safe_float(entry.get("availability_window_sec"), 0.0))
+
+        if reliabilities and (sum(reliabilities) / max(1, len(reliabilities))) < 0.85:
+            cfg["reliability_weight"] = safe_float(cfg.get("reliability_weight"), 0.0) * 1.2 + 25.0
+            cfg["resilience_weight"] = safe_float(cfg.get("resilience_weight"), 1.0) * 1.1
+
+        if availability_windows and min(availability_windows) < safe_float(cfg.get("availability_horizon_sec"), 180.0):
+            cfg["availability_penalty_ms"] = safe_float(cfg.get("availability_penalty_ms"), 200.0) * 1.15
+
+        requested_redundancy = int(job.get("redundancy") or 1)
+        cfg["redundancy"] = max(int(cfg.get("redundancy", 1)), requested_redundancy)
+
+        return cfg
+
     # --------------------- helpers ---------------------
 
     def _supports_formats(self, node: Dict[str, Any], stage: Dict[str, Any]) -> bool:
@@ -305,7 +344,7 @@ class FederatedPlanner:
                 "ts": int(time.time() * 1000),
             }
 
-        cfg = DEFAULT_MODES[_mode_key(mode)]
+        cfg = self._adaptive_mode_cfg(DEFAULT_MODES[_mode_key(mode)], job)
 
         nodes = self.state.nodes_for_planner()
         fed_overview = self.state.federations_overview()
@@ -393,8 +432,18 @@ class FederatedPlanner:
             redundancy = max(1, int(cfg["redundancy"]))
             target_fallbacks = max(0, redundancy - 1)
 
-            if target_fallbacks > 0:
+            if target_fallbacks > 0 and len(candidates) > 1:
+                extra: List[Tuple[float, Dict[str, Any], str, Dict[str, Any]]] = []
+                preferred: List[Tuple[float, Dict[str, Any], str, Dict[str, Any]]] = []
                 for candidate in candidates[1:]:
+                    cand_name = candidate[2]
+                    cand_fed = node_to_fed.get(cand_name) or candidate[3].get("name") or "global"
+                    if cand_fed != best_fed_name:
+                        preferred.append(candidate)
+                    else:
+                        extra.append(candidate)
+                ordered = preferred + extra
+                for candidate in ordered:
                     cand_name = candidate[2]
                     cand_fed = node_to_fed.get(cand_name) or candidate[3].get("name") or "global"
                     cand_metrics = candidate[1]
@@ -429,10 +478,18 @@ class FederatedPlanner:
                     assigned = False
                     infeasible = True
 
+            shadow_records: List[Dict[str, Any]] = []
             if assigned:
                 assignments[sid] = best_name
                 if res_id:
-                    reservations.append({"node": best_name, "reservation_id": res_id})
+                    reservations.append(
+                        {
+                            "node": best_name,
+                            "reservation_id": res_id,
+                            "stage_id": sid,
+                            "role": "primary",
+                        }
+                    )
                 self._consume_resources(best_node, best_fed_entry, need_cpu, need_mem, need_vram)
                 used_federations[best_fed_name] += 1
                 prev_node = best_name
@@ -449,6 +506,35 @@ class FederatedPlanner:
                 "infeasible": not assigned,
                 **best_metrics,
             }
+
+            if assigned and not dry_run and target_fallbacks > 0:
+                for fb_entry in fallback_entries:
+                    fb_node = fb_entry.get("node")
+                    if not fb_node or fb_node == best_name:
+                        continue
+                    req = {
+                        "node": fb_node,
+                        "cpu_cores": need_cpu,
+                        "mem_gb": need_mem,
+                        "gpu_vram_gb": need_vram,
+                    }
+                    fb_res_id = self.state.reserve(req)
+                    if not fb_res_id:
+                        continue
+                    shadow_records.append({"node": fb_node, "reservation_id": fb_res_id})
+                    reservations.append(
+                        {
+                            "node": fb_node,
+                            "reservation_id": fb_res_id,
+                            "stage_id": sid,
+                            "role": "shadow",
+                        }
+                    )
+                    if len(shadow_records) >= target_fallbacks:
+                        break
+
+            if shadow_records:
+                stage_record["shadow_reservations"] = shadow_records
             if fallback_entries:
                 stage_record.setdefault("fallback_summaries", fallback_entries)
             per_stage.append(stage_record)

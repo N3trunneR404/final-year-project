@@ -40,6 +40,8 @@ from .policy.resilient import FederatedPlanner
 from .policy.mdp import MarkovPlanner
 from .policy.rl_stub import RLPolicy
 from .policy.greedy import GreedyPlanner
+from .self_heal import ResourceGuardian, SelfHealingController
+from .noise import maybe_start_noise
 
 try:
     from .policy.bandit import BanditPolicy
@@ -102,6 +104,23 @@ GREEDY_BANDIT = GreedyPlanner(
         "require_format_match": False,
     },
 )
+
+SELF_HEALER = SelfHealingController(
+    STATE,
+    poll_interval=safe_float(os.environ.get("FABRIC_SELF_HEAL_INTERVAL", 2.5), 2.5),
+    reliability_threshold=safe_float(os.environ.get("FABRIC_SELF_HEAL_RELIABILITY", 0.75), 0.75),
+    availability_threshold_sec=safe_float(os.environ.get("FABRIC_SELF_HEAL_AVAIL", 90.0), 90.0),
+    stability_window=int(safe_float(os.environ.get("FABRIC_SELF_HEAL_STABILITY", 2), 2)),
+)
+
+RESOURCE_GUARDIAN = ResourceGuardian(
+    STATE,
+    poll_interval=safe_float(os.environ.get("FABRIC_GUARDIAN_INTERVAL", 5.0), 5.0),
+    utilization_threshold=safe_float(os.environ.get("FABRIC_GUARDIAN_UTIL", 0.92), 0.92),
+    reservation_ttl_sec=safe_float(os.environ.get("FABRIC_GUARDIAN_TTL", 300.0), 300.0),
+)
+
+NOISE_INJECTOR = maybe_start_noise(STATE)
 
 RECENT_PLANS: Deque[Dict[str, Any]] = deque(maxlen=200)
 
@@ -184,8 +203,9 @@ def observe():
         payload = request.get_json()
         STATE.apply_observation(payload)
         return _ok({"applied": True})
-    except Exception as e:
-        return _err(f"observe failed: {e}")
+    except Exception:
+        app.logger.exception("/observe failed")
+        return _err("observe failed", status=500)
 
 
 @app.post("/plan")
@@ -205,50 +225,64 @@ def plan():
     job = body.get("job")
     if not job:
         return _err("missing 'job'")
+    stages = job.get("stages") or []
+    if not stages:
+        return _err("job.stages is empty")
 
-    strategy_raw = body.get("strategy") or "greedy"
-    strategy = strategy_raw.lower().strip()
-    dry_run = bool(body.get("dry_run", False))
+    try:
+        strategy_raw = body.get("strategy") or "greedy"
+        strategy = strategy_raw.lower().strip()
+        dry_run = bool(body.get("dry_run", False))
 
-    if strategy in {
-        "resilient",
-        "network-aware",
-        "federated",
-        "fault-tolerant",
-        "ft",
-        "failover",
-        "balanced",
-        "load-balance",
-        "load-balanced",
-    }:
-        planner_result = FED_PLANNER.plan_job(job, dry_run=dry_run, mode=strategy)
-    elif strategy in {"rl", "mdp", "rl-markov", "markov", "mdp-rl", "reinforcement"}:
-        planner_result = MDP_PLANNER.plan_job(job, dry_run=dry_run)
-    else:
-        if strategy in {"cheapest-energy", "energy", "energy-aware"}:
-            planner_obj = GREEDY_ENERGY
-        elif strategy in {"bandit", "bandit-greedy", "bandit-latency", "bandit-format"}:
-            planner_obj = GREEDY_BANDIT if GREEDY_BANDIT is not None else GREEDY_LATENCY
+        if strategy in {
+            "resilient",
+            "network-aware",
+            "federated",
+            "fault-tolerant",
+            "ft",
+            "failover",
+            "balanced",
+            "load-balance",
+            "load-balanced",
+        }:
+            planner_result = FED_PLANNER.plan_job(job, dry_run=dry_run, mode=strategy)
+        elif strategy in {"rl", "mdp", "rl-markov", "markov", "mdp-rl", "reinforcement"}:
+            planner_result = MDP_PLANNER.plan_job(job, dry_run=dry_run)
         else:
-            planner_obj = GREEDY_LATENCY
-        planner_result = planner_obj.plan_job(job, dry_run=dry_run)
+            if strategy in {"cheapest-energy", "energy", "energy-aware"}:
+                planner_obj = GREEDY_ENERGY
+            elif strategy in {"bandit", "bandit-greedy", "bandit-latency", "bandit-format"}:
+                planner_obj = GREEDY_BANDIT if GREEDY_BANDIT is not None else GREEDY_LATENCY
+            else:
+                planner_obj = GREEDY_LATENCY
+            planner_result = planner_obj.plan_job(job, dry_run=dry_run)
 
-    ddl = safe_float(job.get("deadline_ms"), 0.0)
-    penalty = CM.slo_penalty(ddl, planner_result.get("latency_ms", 0.0)) if ddl > 0 else 0.0
+        ddl = safe_float(job.get("deadline_ms"), 0.0)
+        penalty = CM.slo_penalty(ddl, planner_result.get("latency_ms", 0.0)) if ddl > 0 else 0.0
 
-    planner_result["strategy"] = strategy_raw
-    planner_result["dry_run"] = dry_run
-    planner_result.setdefault("per_stage", [])
-    planner_result.setdefault("reservations", [])
-    planner_result.setdefault("assignments", {})
-    planner_result.setdefault("federation_summary", STATE.federations_overview())
-    planner_result["deadline_ms"] = ddl or None
-    planner_result["slo_penalty"] = penalty
-    planner_result["ts"] = int(time.time() * 1000)
-    planner_result.setdefault("avg_reliability", planner_result.get("avg_reliability"))
-    planner_result["predictive"] = STATE.predictive_overview()
-    RECENT_PLANS.appendleft(planner_result)
-    return _ok(planner_result)
+        planner_result["strategy"] = strategy_raw
+        planner_result["dry_run"] = dry_run
+        planner_result.setdefault("per_stage", [])
+        planner_result.setdefault("reservations", [])
+        planner_result.setdefault("assignments", {})
+        planner_result.setdefault("federation_summary", STATE.federations_overview())
+        planner_result["deadline_ms"] = ddl or None
+        planner_result["slo_penalty"] = penalty
+        planner_result["ts"] = int(time.time() * 1000)
+        planner_result.setdefault("avg_reliability", planner_result.get("avg_reliability"))
+        planner_result["predictive"] = STATE.predictive_overview()
+        planner_result["self_healing_registered"] = False
+        if not dry_run:
+            try:
+                SELF_HEALER.register_plan(job, planner_result)
+                planner_result["self_healing_registered"] = True
+            except Exception:
+                app.logger.exception("failed to register plan with self-healer")
+        RECENT_PLANS.appendleft(planner_result)
+        return _ok(planner_result)
+    except Exception:
+        app.logger.exception("/plan failed")
+        return _err("planning failed", status=500)
 
 
 @app.get("/plans")
@@ -349,8 +383,30 @@ def release():
         rid = r.get("reservation_id")
         if node and rid:
             ok = STATE.release(node, rid)
+            if ok:
+                SELF_HEALER.forget_reservation(rid)
             done.append({"node": node, "reservation_id": rid, "released": bool(ok)})
     return _ok({"released": done})
+
+
+@app.post("/add_node")
+def add_node():
+    if not request.is_json:
+        return _err("expected JSON body")
+    body = request.get_json() or {}
+    descriptor = body.get("node")
+    if not isinstance(descriptor, dict):
+        return _err("missing 'node'")
+    persist = bool(body.get("persist", True))
+    preserve_runtime = bool(body.get("preserve_runtime", True))
+    try:
+        node = STATE.add_or_update_node(descriptor, persist=persist, preserve_runtime=preserve_runtime)
+        return _ok({"node": node.get("name"), "persisted": persist})
+    except ValueError as exc:
+        return _err(str(exc))
+    except Exception:
+        app.logger.exception("/add_node failed")
+        return _err("add_node failed", status=500)
 
 
 # -----------------------------------
