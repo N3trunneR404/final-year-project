@@ -184,8 +184,9 @@ def observe():
         payload = request.get_json()
         STATE.apply_observation(payload)
         return _ok({"applied": True})
-    except Exception as e:
-        return _err(f"observe failed: {e}")
+    except Exception:
+        app.logger.exception("/observe failed")
+        return _err("observe failed", status=500)
 
 
 @app.post("/plan")
@@ -206,49 +207,53 @@ def plan():
     if not job:
         return _err("missing 'job'")
 
-    strategy_raw = body.get("strategy") or "greedy"
-    strategy = strategy_raw.lower().strip()
-    dry_run = bool(body.get("dry_run", False))
+    try:
+        strategy_raw = body.get("strategy") or "greedy"
+        strategy = strategy_raw.lower().strip()
+        dry_run = bool(body.get("dry_run", False))
 
-    if strategy in {
-        "resilient",
-        "network-aware",
-        "federated",
-        "fault-tolerant",
-        "ft",
-        "failover",
-        "balanced",
-        "load-balance",
-        "load-balanced",
-    }:
-        planner_result = FED_PLANNER.plan_job(job, dry_run=dry_run, mode=strategy)
-    elif strategy in {"rl", "mdp", "rl-markov", "markov", "mdp-rl", "reinforcement"}:
-        planner_result = MDP_PLANNER.plan_job(job, dry_run=dry_run)
-    else:
-        if strategy in {"cheapest-energy", "energy", "energy-aware"}:
-            planner_obj = GREEDY_ENERGY
-        elif strategy in {"bandit", "bandit-greedy", "bandit-latency", "bandit-format"}:
-            planner_obj = GREEDY_BANDIT if GREEDY_BANDIT is not None else GREEDY_LATENCY
+        if strategy in {
+            "resilient",
+            "network-aware",
+            "federated",
+            "fault-tolerant",
+            "ft",
+            "failover",
+            "balanced",
+            "load-balance",
+            "load-balanced",
+        }:
+            planner_result = FED_PLANNER.plan_job(job, dry_run=dry_run, mode=strategy)
+        elif strategy in {"rl", "mdp", "rl-markov", "markov", "mdp-rl", "reinforcement"}:
+            planner_result = MDP_PLANNER.plan_job(job, dry_run=dry_run)
         else:
-            planner_obj = GREEDY_LATENCY
-        planner_result = planner_obj.plan_job(job, dry_run=dry_run)
+            if strategy in {"cheapest-energy", "energy", "energy-aware"}:
+                planner_obj = GREEDY_ENERGY
+            elif strategy in {"bandit", "bandit-greedy", "bandit-latency", "bandit-format"}:
+                planner_obj = GREEDY_BANDIT if GREEDY_BANDIT is not None else GREEDY_LATENCY
+            else:
+                planner_obj = GREEDY_LATENCY
+            planner_result = planner_obj.plan_job(job, dry_run=dry_run)
 
-    ddl = safe_float(job.get("deadline_ms"), 0.0)
-    penalty = CM.slo_penalty(ddl, planner_result.get("latency_ms", 0.0)) if ddl > 0 else 0.0
+        ddl = safe_float(job.get("deadline_ms"), 0.0)
+        penalty = CM.slo_penalty(ddl, planner_result.get("latency_ms", 0.0)) if ddl > 0 else 0.0
 
-    planner_result["strategy"] = strategy_raw
-    planner_result["dry_run"] = dry_run
-    planner_result.setdefault("per_stage", [])
-    planner_result.setdefault("reservations", [])
-    planner_result.setdefault("assignments", {})
-    planner_result.setdefault("federation_summary", STATE.federations_overview())
-    planner_result["deadline_ms"] = ddl or None
-    planner_result["slo_penalty"] = penalty
-    planner_result["ts"] = int(time.time() * 1000)
-    planner_result.setdefault("avg_reliability", planner_result.get("avg_reliability"))
-    planner_result["predictive"] = STATE.predictive_overview()
-    RECENT_PLANS.appendleft(planner_result)
-    return _ok(planner_result)
+        planner_result["strategy"] = strategy_raw
+        planner_result["dry_run"] = dry_run
+        planner_result.setdefault("per_stage", [])
+        planner_result.setdefault("reservations", [])
+        planner_result.setdefault("assignments", {})
+        planner_result.setdefault("federation_summary", STATE.federations_overview())
+        planner_result["deadline_ms"] = ddl or None
+        planner_result["slo_penalty"] = penalty
+        planner_result["ts"] = int(time.time() * 1000)
+        planner_result.setdefault("avg_reliability", planner_result.get("avg_reliability"))
+        planner_result["predictive"] = STATE.predictive_overview()
+        RECENT_PLANS.appendleft(planner_result)
+        return _ok(planner_result)
+    except Exception:
+        app.logger.exception("/plan failed")
+        return _err("planning failed", status=500)
 
 
 @app.get("/plans")
