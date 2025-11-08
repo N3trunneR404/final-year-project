@@ -18,7 +18,7 @@ Options
 -------
 --job PATH            YAML file containing a single job object or a list under 'jobs'
 --dry-run             Plan without reserving capacity (default: True)
---strategy STR        planner strategy (greedy, cheapest-energy, resilient, network-aware, federated)
+--strategy STR        planner strategy (greedy, cheapest-energy, bandit, rl-markov, resilient, ...)
 --remote URL          If provided, POSTs to {URL}/plan or {URL}/plan_batch
 --repeat N            Repeat planning N times (useful for Monte-Carlo learning with bandit; local mode)
 --out PATH            Save full JSON result(s) here
@@ -51,13 +51,15 @@ def _try_import_local():
         from dt.cost_model import CostModel
         from dt.policy.greedy import GreedyPlanner
         from dt.policy.resilient import FederatedPlanner
+        from dt.policy.mdp import MarkovPlanner
+        from dt.policy.rl_stub import RLPolicy
         try:
             from dt.policy.bandit import BanditPolicy
         except Exception:
             BanditPolicy = None  # type: ignore
-        return DTState, CostModel, GreedyPlanner, FederatedPlanner, BanditPolicy
-    except Exception as e:
-        return None, None, None, None, None
+        return DTState, CostModel, GreedyPlanner, FederatedPlanner, MarkovPlanner, RLPolicy, BanditPolicy
+    except Exception:
+        return None, None, None, None, None, None, None
 
 def load_yaml(path: Union[str, Path]) -> Any:
     with open(path, "r", encoding="utf-8") as f:
@@ -116,8 +118,22 @@ def print_summary(results: List[Dict[str, Any]]):
                 fallback_str = f" fallback={','.join(fallbacks)}" if fallbacks else ""
                 if fallback_pairs and fallback_pairs != fallbacks:
                     fallback_str += f" fallback_fed={','.join(fallback_pairs)}"
+                load_term = s.get("load_factor")
+                net_term = s.get("network_penalty")
+                exp_cost = s.get("expected_cost")
+                extras = []
+                if load_term is not None:
+                    extras.append(f"load={fmt_ratio(load_term)}")
+                if net_term is not None:
+                    extras.append(f"net={fmt_ratio(net_term)}")
+                if exp_cost is not None:
+                    try:
+                        extras.append(f"J={float(exp_cost):.3f}")
+                    except Exception:
+                        pass
+                extra_str = f" ({', '.join(extras)})" if extras else ""
                 print(
-                    f"  - {s.get('id')} → {s.get('node')}  fmt={s.get('format')}  c={s.get('compute_ms')}ms  x={s.get('xfer_ms')}ms  risk={s.get('risk')}{fallback_str}"
+                    f"  - {s.get('id')} → {s.get('node')}  fmt={s.get('format')}  c={s.get('compute_ms')}ms  x={s.get('xfer_ms')}ms  risk={s.get('risk')}{extra_str}{fallback_str}"
                 )
         return
 
@@ -141,6 +157,18 @@ def print_summary(results: List[Dict[str, Any]]):
                 f"{('['+str(s.get('format'))+']') if s.get('format') else ''} "
                 f"(c:{s.get('compute_ms')}ms, x:{s.get('xfer_ms')}ms)"
             )
+            extras = []
+            if s.get("load_factor") is not None:
+                extras.append(f"load={fmt_ratio(s.get('load_factor'))}")
+            if s.get("network_penalty") is not None:
+                extras.append(f"net={fmt_ratio(s.get('network_penalty'))}")
+            if s.get("expected_cost") is not None:
+                try:
+                    extras.append(f"J={float(s.get('expected_cost')):.3f}")
+                except Exception:
+                    pass
+            if extras:
+                base += f" [{' | '.join(extras)}]"
             if s.get("fallbacks"):
                 fallbacks = s.get("fallbacks") or []
                 fallbacks_with_fed = []
@@ -205,7 +233,15 @@ def plan_remote(
         return list(data)
 
 def plan_local(jobs: List[Dict[str, Any]], dry_run: bool, strategy: str, repeat: int) -> List[Dict[str, Any]]:
-    DTState, CostModel, GreedyPlanner, FederatedPlanner, BanditPolicy = _try_import_local()
+    (
+        DTState,
+        CostModel,
+        GreedyPlanner,
+        FederatedPlanner,
+        MarkovPlanner,
+        RLPolicy,
+        BanditPolicy,
+    ) = _try_import_local()
     if DTState is None:
         raise RuntimeError("Local DT modules not importable. Did you run from project root and install requirements?")
 
@@ -229,6 +265,32 @@ def plan_local(jobs: List[Dict[str, Any]], dry_run: bool, strategy: str, repeat:
         def run(job: Dict[str, Any]) -> Dict[str, Any]:
             return planner.plan_job(job, dry_run=dry_run)
 
+    elif normalized in {"rl", "mdp", "rl-markov", "markov", "mdp-rl", "reinforcement"}:
+        if MarkovPlanner is None:
+            raise RuntimeError("Markov planner unavailable; ensure dt.policy.mdp is importable")
+        rl_agent = RLPolicy(persist_path=os.environ.get("FABRIC_RL_STATE", "sim/rl_state.json")) if RLPolicy else None
+        planner_rl = MarkovPlanner(state, cm, rl_policy=rl_agent, redundancy=3)
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            return planner_rl.plan_job(job, dry_run=dry_run)
+    elif normalized in {"bandit", "bandit-greedy", "bandit-latency", "bandit-format"}:
+        if BanditPolicy is None:
+            raise RuntimeError("Bandit policy unavailable; ensure dt.policy.bandit is importable")
+        bandit_local = BanditPolicy(persist_path=None)
+        planner_bandit = GreedyPlanner(
+            state,
+            cm,
+            bandit=bandit_local,
+            cfg={
+                "risk_weight": 10.0,
+                "energy_weight": 0.0,
+                "prefer_locality_bonus_ms": 0.5,
+                "require_format_match": False,
+            },
+        )
+
+        def run(job: Dict[str, Any]) -> Dict[str, Any]:
+            return planner_bandit.plan_job(job, dry_run=dry_run)
     else:
         if FederatedPlanner is None:
             raise RuntimeError("Federated planner unavailable; ensure dt.policy.resilient is importable")
@@ -260,11 +322,15 @@ def main():
         choices=[
             "greedy",
             "cheapest-energy",
+            "bandit",
             "resilient",
             "network-aware",
             "federated",
             "balanced",
             "fault-tolerant",
+            "rl",
+            "rl-markov",
+            "mdp",
         ],
         help="Planner strategy to apply",
     )

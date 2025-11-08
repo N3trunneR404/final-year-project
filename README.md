@@ -55,11 +55,14 @@ virtual environment for you.
    derates, and chaos-induced failures propagate in real time. Federation tables
    summarise per-fabric load, down hosts, and cross-federation link health while
    the plan history surfaces fallback coverage so you can spot weak failover
-   paths. When launched via `make run-ui` it now points at the API from step 1
-   (`http://127.0.0.1:8080`) by default so the UI reflects real reservations and
-   chaos events. To fall back to the dashboard's embedded state, explicitly run
-   `FABRIC_DT_REMOTE= python -m ui.dashboard` (note the empty value before the
-   command).
+   paths. Updates now stream in every two seconds with animated node/link
+   transitions, the job library lists every YAML under `jobs/`, and the planner
+   form preloads whichever job you select from the catalog before you tweak it
+   in the JSON editor. When launched via `make run-ui` it now points at the API
+   from step 1 (`http://127.0.0.1:8080`) by default so the UI reflects real
+   reservations and chaos events. To fall back to the dashboard's embedded
+   state, explicitly run `FABRIC_DT_REMOTE= python -m ui.dashboard` (note the
+   empty value before the command).
 
    To point the dashboard at a remote API instance instead of its embedded
    state, export `FABRIC_DT_REMOTE=http://127.0.0.1:8080` (or pass
@@ -87,12 +90,19 @@ virtual environment for you.
      ```bash
      make demo NUM=25 WORKERS=4 QPS=2.0
      ```
-   Planner strategies can be swapped at runtime via `--strategy`. In addition to
-   the original greedy and `cheapest-energy` modes, the CLI and dashboard expose
-   `resilient`, `network-aware`, `balanced`, and `federated` strategies powered
-   by `dt/policy/resilient.FederatedPlanner`. These compute fallback placements,
-   penalise saturated federations, and consider link loss/latency when
-   dispatching multi-stage jobs.
+  Planner strategies can be swapped at runtime via `--strategy`. In addition to
+  the original greedy and `cheapest-energy` modes, the CLI and dashboard expose
+  `bandit` (greedy placement with a UCB1 format bandit), `resilient`,
+  `network-aware`, `balanced`, and `federated` strategies powered by
+  `dt/policy/resilient.FederatedPlanner`. These compute fallback placements,
+  penalise saturated federations, and consider link loss/latency when
+  dispatching multi-stage jobs. A new `rl-markov` strategy plugs into
+  `dt/policy/mdp.MarkovPlanner`, which solves a discounted Markov decision
+  process over the stages, aggregates latency/energy/risk via a weighted
+  Tchebycheff score, and keeps learning through the embedded reinforcement
+  learner between planning runs. The dashboard’s job catalog now includes a
+  “Plan entire catalog” shortcut so you can replay every YAML with whichever
+  policy you are comparing.
 
 4. **Inject chaos and observe feedback**
    ```bash
@@ -111,6 +121,11 @@ virtual environment for you.
 5. **Analyse outcomes**
    * `sim/montecarlo.py` perturbs nodes/links and repeatedly plans jobs.
    * `tools/export_csv.py` summarises Monte-Carlo CSVs (requires numpy/pandas).
+   * `tools/policy_benchmark.py` evaluates one or more planner strategies over
+     a job corpus (sampling the first few jobs by default for speed) and emits
+     publication-ready plots comparing latency, energy, risk, and infeasibility.
+     Run `make policy-benchmark` to generate `reports/policy_metrics.png` and a
+     matching JSON dump for your paper.
    * `tools/summarize_nodes.py` and `tools/validate_nodes.py` help curate inputs.
 
 ## Key components
@@ -124,6 +139,9 @@ virtual environment for you.
 * `dt/policy/resilient.py` – network- and federation-aware planner that scores
   candidates for risk, load, link loss, and redundancy to emit primary and
   fallback placements.
+* `dt/policy/mdp.py` – Markov decision process planner with an embedded
+  reinforcement learner that scores stages using a weighted Tchebycheff
+  objective and returns fallback-aware assignments plus learned Q-values.
 * `planner/run_plan.py` – CLI wrapper that can call the local planner or a
   remote API, summarising results in the terminal.
 * `sim/chaos.py` – builds and executes chaos schedules against the DT by writing

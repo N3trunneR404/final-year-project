@@ -27,6 +27,7 @@ import json
 import os
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -37,11 +38,15 @@ from dt.state import DTState, safe_float
 from dt.cost_model import CostModel
 from dt.policy.greedy import GreedyPlanner
 from dt.policy.resilient import FederatedPlanner
+from dt.policy.mdp import MarkovPlanner
+from dt.policy.rl_stub import RLPolicy
 
 try:
     from dt.policy.bandit import BanditPolicy
 except Exception:
     BanditPolicy = None  # optional
+
+import yaml
 
 # ----------------- App singletons -----------------
 
@@ -55,14 +60,18 @@ SESSION = requests.Session()
 STATE: Optional[DTState] = None
 CM: Optional[CostModel] = None
 BANDIT = None
-PLANNER: Optional[GreedyPlanner] = None
+PLANNER_GREEDY: Optional[GreedyPlanner] = None
+PLANNER_ENERGY: Optional[GreedyPlanner] = None
+PLANNER_BANDIT: Optional[GreedyPlanner] = None
 FED_PLANNER: Optional[FederatedPlanner] = None
+RL_AGENT: Optional[RLPolicy] = None
+MDP_PLANNER: Optional[MarkovPlanner] = None
 
 RECENT_PLANS: deque = deque(maxlen=50)
 
 
 def _configure_runtime(remote: Optional[str], timeout: float) -> None:
-    global STATE, CM, BANDIT, PLANNER, FED_PLANNER, REMOTE_BASE, REMOTE_TIMEOUT, REMOTE_LABEL
+    global STATE, CM, BANDIT, PLANNER_GREEDY, PLANNER_ENERGY, PLANNER_BANDIT, FED_PLANNER, RL_AGENT, MDP_PLANNER, REMOTE_BASE, REMOTE_TIMEOUT, REMOTE_LABEL
 
     REMOTE_BASE = remote.rstrip("/") if remote else None
     REMOTE_TIMEOUT = timeout
@@ -74,8 +83,12 @@ def _configure_runtime(remote: Optional[str], timeout: float) -> None:
         STATE = None
         CM = None
         BANDIT = None
-        PLANNER = None
+        PLANNER_GREEDY = None
+        PLANNER_ENERGY = None
+        PLANNER_BANDIT = None
         FED_PLANNER = None
+        RL_AGENT = None
+        MDP_PLANNER = None
     else:
         if STATE is None:
             STATE = DTState()
@@ -85,7 +98,30 @@ def _configure_runtime(remote: Optional[str], timeout: float) -> None:
                 if BanditPolicy
                 else None
             )
-            PLANNER = GreedyPlanner(
+        if STATE is not None and CM is not None:
+            PLANNER_GREEDY = GreedyPlanner(
+                STATE,
+                CM,
+                bandit=None,
+                cfg={
+                    "risk_weight": 10.0,
+                    "energy_weight": 0.0,
+                    "prefer_locality_bonus_ms": 0.5,
+                    "require_format_match": False,
+                },
+            )
+            PLANNER_ENERGY = GreedyPlanner(
+                STATE,
+                CM,
+                bandit=None,
+                cfg={
+                    "risk_weight": 10.0,
+                    "energy_weight": 0.1,
+                    "prefer_locality_bonus_ms": 0.5,
+                    "require_format_match": False,
+                },
+            )
+            PLANNER_BANDIT = GreedyPlanner(
                 STATE,
                 CM,
                 bandit=BANDIT,
@@ -97,6 +133,13 @@ def _configure_runtime(remote: Optional[str], timeout: float) -> None:
                 },
             )
             FED_PLANNER = FederatedPlanner(STATE, CM)
+            RL_AGENT = RLPolicy(persist_path=os.environ.get("FABRIC_RL_STATE", "sim/rl_state.json"))
+            MDP_PLANNER = MarkovPlanner(
+                STATE,
+                CM,
+                rl_policy=RL_AGENT,
+                redundancy=3,
+            )
 
 
 _configure_runtime(REMOTE_BASE, REMOTE_TIMEOUT)
@@ -175,6 +218,76 @@ def _demo_job() -> Dict[str, Any]:
 # ----------------- JSON APIs -----------------
 
 
+def _plan_local_job(job: Dict[str, Any], dry: bool, strategy: str) -> Dict[str, Any]:
+    normalized = strategy.lower().strip()
+    if normalized in {"resilient", "network-aware", "federated", "balanced", "fault-tolerant"}:
+        if FED_PLANNER is None:
+            raise RuntimeError("Federated planner unavailable in embedded mode")
+        res = FED_PLANNER.plan_job(job, dry_run=dry, mode=normalized)
+    elif normalized in {"rl", "mdp", "rl-markov", "markov", "mdp-rl", "reinforcement"}:
+        if MDP_PLANNER is None:
+            raise RuntimeError("RL Markov planner unavailable in embedded mode")
+        res = MDP_PLANNER.plan_job(job, dry_run=dry)
+    else:
+        planner = PLANNER_GREEDY
+        if normalized in {"cheapest-energy", "energy", "energy-aware"} and PLANNER_ENERGY is not None:
+            planner = PLANNER_ENERGY
+        elif normalized in {"bandit", "bandit-greedy", "bandit-latency", "bandit-format"} and PLANNER_BANDIT is not None:
+            planner = PLANNER_BANDIT
+        if planner is None:
+            raise RuntimeError("Greedy planner unavailable in embedded mode")
+        res = planner.plan_job(job, dry_run=dry)
+
+    ddl = safe_float(job.get("deadline_ms"), 0.0)
+    if ddl > 0 and CM is not None:
+        res["slo_penalty"] = CM.slo_penalty(ddl, res.get("latency_ms", 0.0))
+        res["deadline_ms"] = ddl
+    res["strategy"] = strategy
+    res["dry_run"] = dry
+    res["ts"] = int(time.time() * 1000)
+    return res
+
+
+def _jobs_root() -> Path:
+    base = os.environ.get("FABRIC_JOBS_ROOT", "jobs")
+    return Path(base).resolve()
+
+
+def _ensure_jobs(obj: Any) -> List[Dict[str, Any]]:
+    if isinstance(obj, list):
+        return [item for item in obj if isinstance(item, dict)]
+    if isinstance(obj, dict):
+        if isinstance(obj.get("jobs"), list):
+            return [item for item in obj["jobs"] if isinstance(item, dict)]
+        return [obj]
+    return []
+
+
+def _load_job_catalog() -> List[Dict[str, Any]]:
+    root = _jobs_root()
+    entries: List[Dict[str, Any]] = []
+    if not root.exists():
+        return entries
+    for path in sorted(root.glob("*.y*ml")):
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        jobs = _ensure_jobs(payload)
+        for idx, job in enumerate(jobs):
+            job_id = job.get("id") or f"{path.name}#{idx + 1}"
+            entries.append(
+                {
+                    "id": job_id,
+                    "file": path.name,
+                    "index": idx,
+                    "path": str(path),
+                    "job": job,
+                }
+            )
+    return entries
+
+
 @app.get("/api/health")
 def api_health():
     if REMOTE_BASE:
@@ -194,6 +307,13 @@ def api_plans():
     if REMOTE_BASE:
         return _proxy_remote("GET", "/plans")
     return _ok(list(RECENT_PLANS))
+
+
+@app.get("/api/jobs")
+def api_jobs():
+    if REMOTE_BASE:
+        return _proxy_remote("GET", "/jobs")
+    return _ok(_load_job_catalog())
 
 
 @app.post("/api/plan")
@@ -223,18 +343,10 @@ def api_plan():
         }
         return _proxy_remote("POST", "/plan", payload)
 
-    if normalized in {"resilient", "network-aware", "federated", "balanced", "fault-tolerant"} and FED_PLANNER is not None:
-        res = FED_PLANNER.plan_job(job, dry_run=dry, mode=normalized)
-    else:
-        res = PLANNER.plan_job(job, dry_run=dry)
-    # SLO penalty if deadline
-    ddl = safe_float(job.get("deadline_ms"), 0.0)
-    if ddl > 0:
-        res["slo_penalty"] = CM.slo_penalty(ddl, res.get("latency_ms", 0.0))
-        res["deadline_ms"] = ddl
-    res["strategy"] = strategy
-    res["dry_run"] = dry
-    res["ts"] = int(time.time() * 1000)
+    try:
+        res = _plan_local_job(job, dry, strategy)
+    except Exception as exc:
+        return _err(f"plan failed: {exc}")
     RECENT_PLANS.appendleft(res)
     return _ok(res)
 
@@ -250,19 +362,39 @@ def api_plan_demo():
         payload = {"job": job, "dry_run": dry, "strategy": strategy}
         return _proxy_remote("POST", "/plan", payload)
 
-    if normalized in {"resilient", "network-aware", "federated", "balanced", "fault-tolerant"} and FED_PLANNER is not None:
-        res = FED_PLANNER.plan_job(job, dry_run=dry, mode=normalized)
-    else:
-        res = PLANNER.plan_job(job, dry_run=dry)
-    ddl = safe_float(job.get("deadline_ms"), 0.0)
-    if ddl > 0:
-        res["slo_penalty"] = CM.slo_penalty(ddl, res.get("latency_ms", 0.0))
-        res["deadline_ms"] = ddl
-    res["strategy"] = strategy
-    res["dry_run"] = dry
-    res["ts"] = int(time.time() * 1000)
+    try:
+        res = _plan_local_job(job, dry, strategy)
+    except Exception as exc:
+        return _err(f"plan failed: {exc}")
     RECENT_PLANS.appendleft(res)
     return _ok(res)
+
+
+@app.post("/api/plan_batch")
+def api_plan_batch():
+    if not request.is_json:
+        return _err("expected JSON body")
+    payload = request.get_json() or {}
+    jobs = payload.get("jobs") or []
+    if not isinstance(jobs, list) or not jobs:
+        return _err("jobs must be a non-empty list")
+    dry = bool(payload.get("dry_run", True))
+    strategy = payload.get("strategy") or "greedy"
+    if REMOTE_BASE:
+        proxy_payload = {"jobs": jobs, "dry_run": dry, "strategy": strategy}
+        return _proxy_remote("POST", "/plan_batch", proxy_payload)
+
+    results: List[Dict[str, Any]] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        try:
+            res = _plan_local_job(job, dry, strategy)
+        except Exception as exc:
+            return _err(f"plan failed: {exc}")
+        results.append(res)
+        RECENT_PLANS.appendleft(res)
+    return _ok({"results": results})
 
 
 @app.post("/api/observe")
@@ -308,6 +440,7 @@ _INDEX_HTML = r"""<!doctype html>
   --muted2: #6c7a8a;
   --text: #e7eef7;
   --accent: #6fc1ff;
+  --accent-strong: #4aa3f0;
   --good: #2ecc71;
   --warn: #f1c40f;
   --bad: #e74c3c;
@@ -344,8 +477,10 @@ small { color: var(--muted2); }
 }
 .btn:hover { border-color: #3f5876; }
 .btn.primary { background: #13314d; border-color: #2c5b86; color: #cfe7ff; }
+.btn.secondary { background: #172235; border-color: #2d3f57; color: #b6cae4; }
 .btn.bad { background: #3a1010; border-color: #5b1a1a; color: #ffbbbb; }
 .btn.good { background: #103a28; border-color: #1b5e40; color: #bbffde; }
+.btn:active { transform: translateY(1px); }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #202b38; vertical-align: top; }
@@ -362,6 +497,30 @@ textarea, input, select {
   padding: 10px 12px; outline: none;
 }
 textarea:focus, input:focus { border-color: #3a5575; }
+.job-catalog { display: grid; grid-template-columns: minmax(200px, 280px) 1fr; gap: 12px; }
+@media (max-width: 900px) { .job-catalog { grid-template-columns: 1fr; } }
+.job-list { max-height: 260px; overflow: auto; border: 1px solid #1f2b3b; border-radius: 10px; background: #0f1622; padding: 8px; }
+.job-list button { width: 100%; text-align: left; margin-bottom: 6px; }
+.job-preview { border: 1px solid #1f2b3b; border-radius: 10px; background: #0f1622; padding: 12px; min-height: 240px; }
+.job-preview h3 { margin-top: 0; font-size: 14px; color: #cfe7ff; }
+.job-stage { background: rgba(29,45,67,0.65); border: 1px solid #243349; border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+.job-stage .title { font-weight: 600; }
+.job-stage .meta { font-size: 12px; color: var(--muted2); margin-top: 4px; }
+.inline-select { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.inline-select > * { flex: 1 1 160px; }
+.label-chip { font-size: 12px; color: var(--muted2); background: #162031; padding: 4px 8px; border-radius: 8px; border: 1px solid #253248; }
+.sparkle { box-shadow: 0 0 18px rgba(110,193,255,0.25); filter: drop-shadow(0 0 6px rgba(110,193,255,0.45)); }
+.topology-refresh { animation: fadeSlide 0.9s ease-in-out; }
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.topology-canvas svg { transition: transform 0.6s ease, opacity 0.6s ease; }
+.node-core { stroke: #1a2533; stroke-width: 1.5px; transition: fill 0.6s ease, r 0.6s ease; }
+.node-ring { fill: none; stroke-width: 3px; opacity: 0.85; transition: stroke 0.6s ease, stroke-dasharray 0.6s ease; }
+.node-shadow { fill: none; stroke: #f39c12; stroke-width: 2px; opacity: 0.75; stroke-dasharray: 5 4; animation: halo 2s infinite ease-in-out; }
+@keyframes halo { 0% { opacity: 0.1; } 50% { opacity: 0.8; } 100% { opacity: 0.1; } }
+.link { stroke: #243140; stroke-width: 1.8px; stroke-linecap: round; opacity: 0.9; transition: stroke 0.6s ease, stroke-width 0.6s ease; }
+.link.degraded { stroke: #f39c12; stroke-width: 2.4px; }
+.link.down { stroke: #e74c3c; stroke-width: 2.6px; opacity: 0.95; }
+.legend-dot.spark { box-shadow: 0 0 12px rgba(79,180,255,0.4); }
 footer { color: var(--muted2); text-align: center; padding: 12px; }
 hr { border: none; border-top: 1px solid #1f2a39; margin: 12px 0; }
 .small { font-size: 12px; color: var(--muted2); }
@@ -383,7 +542,7 @@ hr { border: none; border-top: 1px solid #1f2a39; margin: 12px 0; }
 .legend-dot.up { background: #2ecc71; border: 1px solid #1e5d42; }
 .legend-dot.derate { background: #f1c40f; border: 1px solid #6e5a1a; }
 .legend-dot.down { background: #e74c3c; border: 1px solid #5e1b1b; }
-.legend-dot.assignment { border: 2px solid var(--accent); border-radius: 50%; width: 12px; height: 12px; }
+.legend-dot.assignment { border: 2px solid var(--accent); border-radius: 50%; width: 12px; height: 12px; box-shadow: 0 0 8px rgba(79,180,255,0.45); }
 .legend-dot.fallback { border: 2px dashed #f39c12; background: transparent; }
 .legend-dot.lossy { background: #f39c12; border: 1px solid #925208; }
 .node-label { fill: #cfe7ff; font-size: 11px; pointer-events: none; text-anchor: middle; }
@@ -536,21 +695,36 @@ hr { border: none; border-top: 1px solid #1f2a39; margin: 12px 0; }
 
     <div class="card">
       <h2>Plan a Job</h2>
-      <div class="row">
+      <div class="inline-select">
         <label class="flex"><input id="dryRun" type="checkbox" checked /> Dry run</label>
         <select id="strategySelect">
-          <option value="greedy">Strategy: Greedy</option>
+          <option value="greedy">Strategy: Greedy latency</option>
           <option value="cheapest-energy">Strategy: Cheapest energy</option>
-          <option value="resilient">Strategy: Resilient</option>
+          <option value="bandit">Strategy: Bandit format-aware</option>
+          <option value="resilient">Strategy: Resilient federation</option>
           <option value="network-aware">Strategy: Network aware</option>
-          <option value="federated">Strategy: Federated</option>
+          <option value="federated">Strategy: Federated spread</option>
           <option value="balanced">Strategy: Balanced</option>
+          <option value="rl-markov">Strategy: RL Markov planner</option>
         </select>
         <button class="btn primary" onclick="submitPlan()">Plan</button>
       </div>
-      <textarea id="jobJson" rows="14" placeholder='Paste your job JSON here...'></textarea>
-      <div class="small">Your job should contain: <span class="mono">id</span>, optional <span class="mono">deadline_ms</span>, and <span class="mono">stages[]</span>.</div>
-      <div class="small">Uncheck “Dry run” to reserve capacity. Active reservations glow with a cyan halo on the topology map. Resilient and federated strategies surface fallbacks and projected federation load in the plan table.</div>
+      <div class="job-catalog" id="jobCatalogWrap">
+        <div class="job-list" id="jobList">
+          <div class="small">Loading job library…</div>
+        </div>
+        <div class="job-preview" id="jobPreview">
+          <h3>Job preview</h3>
+          <div class="small">Select a job from the catalog to inspect resources and load it into the planner form.</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px; flex-wrap: wrap; gap:8px;">
+        <button class="btn" onclick="planCatalog()">Plan entire catalog</button>
+        <button class="btn secondary" onclick="loadSelectedJob()">Load selection into editor</button>
+        <button class="btn" onclick="clearJobEditor()">Clear editor</button>
+      </div>
+      <textarea id="jobJson" rows="12" placeholder='Paste or edit the job JSON here…'></textarea>
+      <div class="small">Jobs from the catalog include the <span class="mono">jobs/</span> YAML files. Edit the JSON to tweak resource requests, then run with any policy. Choose between greedy, bandit, and RL planners to compare live behaviour; the RL Markov planner minimises a Pareto-weighted cost and learns over time using the reinforcement learner.</div>
     </div>
 
     <div class="card">
@@ -597,6 +771,8 @@ let SNAP = null;
 let LAST_PLAN = null;
 let TOPO_SIM = null;
 let TOPO_RESIZE = null;
+let JOB_CATALOG = [];
+let JOB_SELECTED = null;
 
 async function fetchJSON(url, opts) {
   const r = await fetch(url, opts || {});
@@ -614,9 +790,109 @@ function fmt(x, d=2) {
   return Number(x).toFixed(d);
 }
 function ts(ms) { const d = new Date(ms); return d.toLocaleString(); }
+function esc(text) {
+  return String(text === undefined || text === null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 function badge(s, cls) { return `<span class="badge ${cls}">${s}</span>`; }
 function tag(s) { return `<span class="tag">${s}</span>`; }
+
+async function loadJobCatalog() {
+  try {
+    const data = await fetchJSON('/api/jobs');
+    JOB_CATALOG = Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.warn('failed to load jobs', e);
+    JOB_CATALOG = [];
+  }
+  if (JOB_CATALOG.length && (JOB_SELECTED === null || JOB_SELECTED >= JOB_CATALOG.length)) {
+    JOB_SELECTED = 0;
+  }
+  renderJobCatalog();
+}
+
+function renderJobCatalog() {
+  const listEl = document.getElementById('jobList');
+  const previewEl = document.getElementById('jobPreview');
+  if (!listEl || !previewEl) return;
+  if (!JOB_CATALOG.length) {
+    listEl.innerHTML = '<div class="small">No job YAMLs discovered yet. Drop files into <span class="mono">jobs/</span>.</div>';
+    previewEl.innerHTML = '<h3>Job preview</h3><div class="small">No catalog entries available.</div>';
+    JOB_SELECTED = null;
+    return;
+  }
+  if (JOB_SELECTED === null) JOB_SELECTED = 0;
+  listEl.innerHTML = JOB_CATALOG.map((entry, idx) => {
+    const active = idx === JOB_SELECTED ? 'sparkle' : '';
+    return `<button class="btn secondary ${active}" onclick="selectJob(${idx})">${esc(entry.id || 'job')} • ${esc(entry.file || '')}</button>`;
+  }).join('');
+  renderJobPreview(JOB_CATALOG[JOB_SELECTED]);
+}
+
+function renderJobPreview(entry) {
+  const previewEl = document.getElementById('jobPreview');
+  if (!previewEl) return;
+  if (!entry) {
+    previewEl.innerHTML = '<h3>Job preview</h3><div class="small">Select a job to inspect stages and resources.</div>';
+    return;
+  }
+  const job = entry.job || {};
+  const stages = Array.isArray(job.stages) ? job.stages : [];
+  let html = `<h3>${esc(entry.id || 'job')}</h3>`;
+  html += `<div class="label-chip">File: ${esc(entry.file || '')}</div>`;
+  if (job.deadline_ms) {
+    html += `<div class="label-chip">Deadline: ${fmt(job.deadline_ms, 0)} ms</div>`;
+  }
+  if (!stages.length) {
+    html += '<div class="small">This job has no stages defined.</div>';
+    previewEl.innerHTML = html;
+    return;
+  }
+  html += stages.map((stage, idx) => {
+    const res = stage.resources || {};
+    const formats = Array.isArray(stage.allowed_formats) ? stage.allowed_formats.join(', ') : 'any';
+    const cpu = res.cpu_cores !== undefined ? res.cpu_cores : '—';
+    const mem = res.mem_gb !== undefined ? res.mem_gb : '—';
+    const vram = res.gpu_vram_gb !== undefined ? res.gpu_vram_gb : '—';
+    const size = stage.size_mb !== undefined ? `${stage.size_mb} MB` : '—';
+    return `
+      <div class="job-stage">
+        <div class="title">Stage ${idx + 1}: ${esc(stage.id || stage.type || 'stage')}</div>
+        <div class="meta">Type: ${esc(stage.type || '—')} • Size: ${esc(size)}</div>
+        <div class="meta">CPU: ${esc(cpu)} cores • Mem: ${esc(mem)} GB • VRAM: ${esc(vram)} GB</div>
+        <div class="meta">Formats: ${esc(formats)}</div>
+      </div>
+    `;
+  }).join('');
+  previewEl.innerHTML = html;
+}
+
+function selectJob(idx) {
+  if (idx < 0 || idx >= JOB_CATALOG.length) return;
+  JOB_SELECTED = idx;
+  renderJobCatalog();
+}
+
+function loadSelectedJob() {
+  if (JOB_SELECTED === null || !JOB_CATALOG[JOB_SELECTED]) {
+    alert('Select a job from the catalog first.');
+    return;
+  }
+  const job = JOB_CATALOG[JOB_SELECTED].job || {};
+  const editor = document.getElementById('jobJson');
+  if (editor) {
+    editor.value = JSON.stringify(job, null, 2);
+    editor.focus();
+  }
+}
+
+function clearJobEditor() {
+  const editor = document.getElementById('jobJson');
+  if (editor) editor.value = '';
+}
 
 function renderOverview() {
   if (!SNAP) return;
@@ -784,6 +1060,9 @@ function renderTopology() {
     wrap.innerHTML = '<div class="small">No topology data yet.</div>';
     return;
   }
+  wrap.classList.remove('topology-refresh');
+  void wrap.offsetWidth;
+  wrap.classList.add('topology-refresh');
 
   const assignments = new Map();
   if (LAST_PLAN && Array.isArray(LAST_PLAN.per_stage)) {
@@ -883,7 +1162,11 @@ function renderTopology() {
     .data(links)
     .enter()
     .append('line')
-    .attr('class', 'link')
+    .attr('class', d => {
+      if (d.down) return 'link down';
+      if (d.loss >= 2.0 || d.jitter >= 2.0) return 'link degraded';
+      return 'link';
+    })
     .attr('stroke', linkColor)
     .attr('stroke-width', linkWidth);
 
@@ -955,6 +1238,7 @@ function renderTopology() {
     .data(nodes)
     .enter()
     .append('g')
+    .attr('class', d => (d.assignCount > 0 ? 'node-group sparkle' : 'node-group'))
     .call(drag(simulation));
 
   node
@@ -965,7 +1249,7 @@ function renderTopology() {
 
   node
     .append('circle')
-    .attr('class', 'node-ring')
+    .attr('class', d => (d.assignCount > 0 ? 'node-ring sparkle' : 'node-ring'))
     .attr('r', d => nodeRadius(d) + 5)
     .attr('stroke', d => (d.assignCount > 0 ? '#6fc1ff' : '#2ecc71'))
     .attr('stroke-dasharray', d => (d.assignCount > 0 ? null : '6 4'))
@@ -1081,7 +1365,13 @@ function renderPlans() {
         const fallbackHtml = fallbackPairs ? `<div class="small">Fallback: ${fallbackPairs}</div>` : '';
         const fedTag = s.federation ? `<div class="small">Federation: ${s.federation}</div>` : '';
         const reason = s.infeasible && s.reason ? `<div class="small">${s.reason}</div>` : '';
-        return `<div class="small"><span class="mono">${s.id||'?'}</span> → <b>${nodeName}</b> ${fmtTag} ${inf} <span class="mono">c:${fmt(s.compute_ms,1)}ms</span> <span class="mono">x:${fmt(s.xfer_ms,1)}ms</span>${fallbackHtml}${fedTag}${reason}<\/div>`;
+        const load = s.load_factor !== undefined && s.load_factor !== null ? `<span class="mono">load:${fmt(s.load_factor,2)}</span>` : '';
+        const net = s.network_penalty !== undefined && s.network_penalty !== null ? `<span class="mono">net:${fmt(s.network_penalty,2)}</span>` : '';
+        const score = s.expected_cost !== undefined && s.expected_cost !== null ? `<span class="mono">J:${fmt(s.expected_cost,3)}</span>` : '';
+        const extras = [load, net, score].filter(Boolean).join(' ');
+        const metrics = `<span class="mono">c:${fmt(s.compute_ms,1)}ms</span> <span class="mono">x:${fmt(s.xfer_ms,1)}ms</span>`;
+        const extraLine = extras ? `<div class="small">${extras}</div>` : '';
+        return `<div class="small"><span class="mono">${s.id||'?'}</span> → <b>${nodeName}</b> ${fmtTag} ${inf} ${metrics}${extraLine}${fallbackHtml}${fedTag}${reason}<\/div>`;
       }).join('');
       const spreadVal = p.federation_spread !== null && p.federation_spread !== undefined ? fmt(p.federation_spread, 2) : '—';
       const feds = (p.federations_in_use || []).map(tag).join(' ');
@@ -1146,6 +1436,20 @@ async function submitPlan() {
   }
 }
 
+async function planCatalog() {
+  if (!JOB_CATALOG.length) { alert('No jobs discovered in jobs/ yet.'); return; }
+  const jobs = JOB_CATALOG.map(entry => entry.job).filter(j => j && typeof j === 'object');
+  if (!jobs.length) { alert('Job catalog has no valid entries to plan.'); return; }
+  const dry = document.getElementById('dryRun').checked;
+  const strategy = document.getElementById('strategySelect').value || 'greedy';
+  try {
+    await fetchJSON('/api/plan_batch', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({jobs, dry_run: dry, strategy})});
+    await refresh();
+  } catch (e) {
+    alert('Batch planning failed: '+e.message);
+  }
+}
+
 async function runDemo(dry=true) {
   const strategy = document.getElementById('strategySelect').value || 'greedy';
   try {
@@ -1176,8 +1480,11 @@ window.addEventListener('resize', () => {
   }, 200);
 });
 
-setInterval(refresh, 4000);
-window.addEventListener('load', refresh);
+setInterval(refresh, 2000);
+window.addEventListener('load', () => {
+  refresh();
+  loadJobCatalog();
+});
 </script>
 
 </body>
