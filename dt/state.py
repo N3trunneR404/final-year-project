@@ -570,12 +570,12 @@ class DTState:
                         self.links_by_key[k] = link
                     else:
                         return
-            dyn = link.setdefault("dyn", LinkDyn().__dict__.copy())
-            for kk, vv in changes.items():
-                if kk in dyn:
-                    dyn[kk] = vv
-            self._update_link_predictive_locked(k)
-            self._emit_event("fabric.link.observe", {"link": k, "changes": changes}, subject=k)
+                dyn = link.setdefault("dyn", LinkDyn().__dict__.copy())
+                for kk, vv in changes.items():
+                    if kk in dyn:
+                        dyn[kk] = vv
+                self._update_link_predictive_locked(k)
+                self._emit_event("fabric.link.observe", {"link": k, "changes": changes}, subject=k)
         self._invalidate_snapshot_locked()
 
     # -------- federation + planner helpers --------
