@@ -109,11 +109,19 @@ class SelfHealingController:
             for job_id, stages in self._managed.items():
                 for stage_id, managed in stages.items():
                     if managed.reservation_id == reservation_id:
+                        for shadow in managed.shadow_reservations:
+                            self.state.release(shadow.node, shadow.reservation_id)
+                        managed.shadow_reservations.clear()
                         to_delete.append((job_id, stage_id))
                         continue
-                    managed.shadow_reservations = [
-                        sh for sh in managed.shadow_reservations if sh.reservation_id != reservation_id
-                    ]
+
+                    retained: List[ShadowReservation] = []
+                    for shadow in managed.shadow_reservations:
+                        if shadow.reservation_id == reservation_id:
+                            self.state.release(shadow.node, shadow.reservation_id)
+                        else:
+                            retained.append(shadow)
+                    managed.shadow_reservations = retained
             for job_id, stage_id in to_delete:
                 self._managed[job_id].pop(stage_id, None)
                 if not self._managed[job_id]:
