@@ -26,11 +26,16 @@ UI_PORT  ?= 8090
 NODES_DIR ?= nodes
 JOBS_FILE ?= jobs/jobs_10.yaml
 TOPO_FILE ?= sim/topology.yaml
+POLICY_JOBS ?= $(JOBS_FILE)
+POLICY_STRATEGIES ?= greedy bandit rl-markov
+POLICY_PLOT ?= reports/policy_metrics.png
+POLICY_JSON ?= reports/policy_metrics.json
+POLICY_LIMIT ?= 6
 
 # ---------- meta ----------
 .PHONY: help install venv deps freeze clean format lint \
         run-api run-ui gen-nodes validate-nodes summarize-nodes export-csv \
-        plan demo montecarlo chaos \
+        plan policy-benchmark demo montecarlo chaos \
         docker-launch docker-clean
 
 help:
@@ -42,10 +47,11 @@ help:
 	@echo "  validate-nodes   - validate nodes/*.yaml against schema"
 	@echo "  summarize-nodes  - print inventory table"
 	@echo "  export-csv       - export last plan(s) to CSV"
-	@echo "  plan             - plan $(JOBS_FILE) locally (dry-run)"
+        @echo "  plan             - plan $(JOBS_FILE) locally (dry-run)"
+        @echo "  policy-benchmark - benchmark planners & plot metrics"
 	@echo "  demo             - send demo jobs (local); see vars NUM, WORKERS"
 	@echo "  montecarlo       - run Monte Carlo simulation"
-        @echo "  chaos            - apply chaos schedule from $(TOPO_FILE) (SCENARIO=name)"
+	@echo "  chaos            - apply chaos schedule from $(TOPO_FILE) (SCENARIO=name)"
 	@echo "  docker-launch    - launch approx containers for nodes/"
 	@echo "  docker-clean     - stop & remove launched containers"
 	@echo "  format           - black/isort format"
@@ -71,7 +77,13 @@ run-api:
 	$(ACT); FABRIC_API_HOST=$(API_HOST) FABRIC_API_PORT=$(API_PORT) $(PY) -m dt.api
 
 run-ui:
-	$(ACT); FABRIC_UI_HOST=$(UI_HOST) FABRIC_UI_PORT=$(UI_PORT) $(PY) -m ui.dashboard
+	$(ACT); \
+	if [ -z "$${FABRIC_DT_REMOTE+x}" ]; then \
+		REMOTE="http://$(API_HOST):$(API_PORT)"; \
+	else \
+		REMOTE="$${FABRIC_DT_REMOTE}"; \
+	fi; \
+	FABRIC_UI_HOST=$(UI_HOST) FABRIC_UI_PORT=$(UI_PORT) FABRIC_DT_REMOTE="$$REMOTE" $(PY) -m ui.dashboard
 
 # ---------- data generation / validation ----------
 gen-nodes:
@@ -88,7 +100,10 @@ export-csv:
 
 # ---------- planning ----------
 plan:
-	$(ACT); $(PY) -m planner.run_plan --job $(JOBS_FILE) --dry-run
+        $(ACT); $(PY) -m planner.run_plan --job $(JOBS_FILE) --dry-run
+
+policy-benchmark:
+        $(ACT); $(PY) -m tools.policy_benchmark --jobs $(POLICY_JOBS) --strategies $(POLICY_STRATEGIES) --out $(POLICY_PLOT) --json-out $(POLICY_JSON) --limit $(POLICY_LIMIT)
 
 # Demo knobs: NUM=50 WORKERS=4 QPS=2.0 DRY=0 REMOTE=http://127.0.0.1:8080
 demo:
@@ -103,7 +118,7 @@ montecarlo:
 	$(ACT); $(PY) -m sim.montecarlo --jobs $(JOBS_FILE) --trials $${TRIALS:-200} --out plans/montecarlo.json
 
 chaos:
-        $(ACT); $(PY) -m sim.chaos --topology $(TOPO_FILE) $$( [ -z "$$SCENARIO" ] && echo "" || echo "--scenario $$SCENARIO" ) --run
+	$(ACT); $(PY) -m sim.chaos --topology $(TOPO_FILE) $$( [ -z "$$SCENARIO" ] && echo "" || echo "--scenario $$SCENARIO" ) --run
 
 # ---------- docker (optional) ----------
 # Requires: pip install docker, docker daemon running
