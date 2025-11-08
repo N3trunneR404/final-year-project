@@ -62,6 +62,116 @@ def load_topology(path: Optional[Path]) -> Dict[str, Any]:
         return {}
     return load_yaml(path)
 
+
+# --------------------------
+# Synthetic workload generator
+# --------------------------
+
+SYNTHETIC_PROFILES: Dict[str, Dict[str, Any]] = {
+    "cpu": {
+        "size_mb": (10, 60),
+        "cpu_cores": (1.0, 6.0),
+        "mem_gb": (1.0, 8.0),
+    },
+    "gpu": {
+        "size_mb": (40, 180),
+        "cpu_cores": (1.0, 4.0),
+        "mem_gb": (4.0, 12.0),
+        "gpu_vram_gb": (2.0, 16.0),
+        "allowed_formats": ["cuda", "native"],
+    },
+    "io": {
+        "size_mb": (200, 600),
+        "cpu_cores": (0.5, 2.0),
+        "mem_gb": (2.0, 6.0),
+    },
+    "vision": {
+        "size_mb": (80, 220),
+        "cpu_cores": (2.0, 6.0),
+        "mem_gb": (4.0, 10.0),
+        "gpu_vram_gb": (4.0, 12.0),
+        "allowed_formats": ["cuda", "npu", "wasm"],
+    },
+    "edge": {
+        "size_mb": (5, 25),
+        "cpu_cores": (0.5, 2.0),
+        "mem_gb": (0.5, 2.0),
+        "allowed_formats": ["wasm", "native"],
+    },
+}
+
+
+def _rand_range(rng: Tuple[float, float]) -> float:
+    return random.uniform(rng[0], rng[1])
+
+
+def build_stage(profile: str, index: int) -> Dict[str, Any]:
+    meta = SYNTHETIC_PROFILES.get(profile.lower()) or SYNTHETIC_PROFILES["cpu"]
+    stage = {
+        "id": f"stage-{index}",
+        "size_mb": round(_rand_range(meta.get("size_mb", (10, 40))), 2),
+        "resources": {
+            "cpu_cores": round(_rand_range(meta.get("cpu_cores", (1.0, 3.0))), 2),
+            "mem_gb": round(_rand_range(meta.get("mem_gb", (1.0, 4.0))), 2),
+        },
+    }
+    if "gpu_vram_gb" in meta:
+        stage["resources"]["gpu_vram_gb"] = round(_rand_range(meta["gpu_vram_gb"]), 2)
+    if meta.get("allowed_formats"):
+        stage["allowed_formats"] = meta["allowed_formats"]
+    if profile.lower() == "edge":
+        stage["labels"] = {"preferred_zone": "edge"}
+    return stage
+
+
+def _random_dag_edges(stage_ids: List[str]) -> List[Dict[str, str]]:
+    edges: List[Dict[str, str]] = []
+    for i, src in enumerate(stage_ids):
+        for dst in stage_ids[i + 1 :]:
+            if random.random() < 0.35:
+                edges.append({"from": src, "to": dst})
+    return edges
+
+
+def generate_synthetic_catalog(
+    count: int,
+    profiles: List[str],
+    max_stages: int,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    if seed is not None:
+        random.seed(seed)
+
+    catalog: List[Dict[str, Any]] = []
+    profile_pool = [p for p in profiles if p]
+    if not profile_pool:
+        profile_pool = list(SYNTHETIC_PROFILES.keys())
+
+    for idx in range(1, count + 1):
+        num_stages = max(1, random.randint(2, max(2, max_stages)))
+        stages: List[Dict[str, Any]] = []
+        selected_profiles = random.choices(profile_pool, k=num_stages)
+        for sidx, prof in enumerate(selected_profiles, start=1):
+            stages.append(build_stage(prof, sidx))
+
+        stage_ids = [st["id"] for st in stages]
+        edges = _random_dag_edges(stage_ids)
+        deadline = random.choice([0, random.randint(800, 2500), random.randint(2500, 6000)])
+
+        job = {
+            "id": f"synthetic-job-{idx}",
+            "stages": stages,
+            "deadline_ms": deadline,
+            "edges": edges,
+            "redundancy": random.choice([1, 1, 2, 3]),
+            "priority": random.choice(["low", "normal", "high"]),
+        }
+
+        catalog.append(job)
+
+    return {"jobs": catalog}
+
+
 # --------------------------
 # Simple link db (from topology)
 # --------------------------
@@ -314,7 +424,15 @@ def write_csv(path: Path, rows: List[Dict[str, Any]]):
 def main():
     ap = argparse.ArgumentParser(description="Fabric Monte-Carlo evaluator")
     ap.add_argument("--nodes", type=str, default="nodes", help="Path to nodes/ dir")
-    ap.add_argument("--jobs", type=str, required=True, help="Path to a jobs YAML (e.g., jobs/jobs_10.yaml)")
+    ap.add_argument("--jobs", type=str, help="Path to a jobs YAML (e.g., jobs/jobs_10.yaml)")
+    ap.add_argument("--synthetic", type=int, default=0, help="Generate N synthetic jobs instead of reading a file")
+    ap.add_argument("--synthetic-max-stages", type=int, default=4, help="Maximum number of stages per synthetic job")
+    ap.add_argument(
+        "--synthetic-profiles",
+        type=str,
+        default="cpu,gpu,vision,edge",
+        help="Comma separated stage profiles to sample (cpu,gpu,vision,edge,io)",
+    )
     ap.add_argument("--topology", type=str, default=None, help="Path to topology.yaml")
     ap.add_argument("--trials", type=int, default=100)
     ap.add_argument("--seed", type=int, default=123)
@@ -328,14 +446,27 @@ def main():
     if not nodes:
         print("[error] no nodes found in ./nodes/")
         sys.exit(2)
-    jobs_payload = load_jobs(Path(args.jobs))
+    if args.synthetic > 0:
+        profiles = [p.strip() for p in args.synthetic_profiles.split(",")]
+        jobs_payload = generate_synthetic_catalog(
+            args.synthetic,
+            profiles,
+            max_stages=max(1, args.synthetic_max_stages),
+            seed=args.seed,
+        )
+        print(f"[synthetic] generated {args.synthetic} jobs using profiles {profiles}")
+    elif args.jobs:
+        jobs_payload = load_jobs(Path(args.jobs))
+    else:
+        print("[error] provide --jobs file or --synthetic count")
+        sys.exit(2)
     topology = load_topology(Path(args.topology)) if args.topology else {}
     link_db_base = build_link_db(topology)
 
     # Prepare jobs list (the schema allows multiple jobs; run them sequentially here)
     jobs_list = jobs_payload.get("jobs") or []
     if not jobs_list:
-        print("[error] jobs file has no 'jobs' array.")
+        print("[error] job catalog is empty.")
         sys.exit(2)
 
     rows: List[Dict[str, Any]] = []

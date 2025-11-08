@@ -575,6 +575,143 @@ class DTState:
         with self._lock:
             return self.nodes_by_name.get(name)
 
+    def add_or_update_node(
+        self,
+        descriptor: Dict[str, Any],
+        *,
+        persist: bool = True,
+        preserve_runtime: bool = True,
+    ) -> Dict[str, Any]:
+        """Insert or update a node descriptor at runtime.
+
+        Args:
+            descriptor: Full node descriptor (same shape as YAML on disk).
+            persist:   If True, write descriptor back to ``nodes/<name>.yaml``.
+            preserve_runtime: Keep existing dyn/reservation data when updating.
+
+        Returns:
+            The effective node dictionary stored in ``nodes_by_name``.
+        """
+
+        name = (descriptor or {}).get("name")
+        if not name:
+            raise ValueError("descriptor.name is required")
+
+        disk_descriptor = copy.deepcopy(descriptor)
+        disk_descriptor.pop("dyn", None)
+
+        with self._lock:
+            prev = self.nodes_by_name.get(name)
+            dyn_defaults = NodeDyn().__dict__.copy()
+
+            incoming_dyn = dict(descriptor.get("dyn") or {})
+            for key, value in incoming_dyn.items():
+                if key in dyn_defaults:
+                    if key == "reservations" and isinstance(value, dict):
+                        dyn_defaults[key] = dict(value)
+                    else:
+                        dyn_defaults[key] = value
+
+            if preserve_runtime and prev:
+                prev_dyn = prev.get("dyn") or {}
+                for key, value in prev_dyn.items():
+                    if key == "reservations" and isinstance(value, dict):
+                        dyn_defaults[key] = dict(value)
+                    elif key in dyn_defaults:
+                        dyn_defaults[key] = value
+
+            node = copy.deepcopy(descriptor)
+            node["name"] = name
+            node["dyn"] = dyn_defaults
+
+            self._compute_and_cache_capacities(node)
+
+            health = node.get("health") or {}
+            lifecycle = node.get("lifecycle") or {}
+            power = node.get("power") or {}
+
+            self._predictor.ensure_node(
+                name,
+                reliability=None
+                if health.get("reliability") is None
+                else safe_float(health.get("reliability"), 0.95),
+                availability_window_sec=None
+                if lifecycle.get("availability_window_sec") is None
+                else safe_float(lifecycle.get("availability_window_sec"), 0.0),
+                battery_pct=None
+                if power.get("battery_pct") is None
+                else safe_float(power.get("battery_pct"), 0.0),
+                battery_drain_pct_per_hr=None
+                if power.get("battery_drain_pct_per_hr") is None
+                else safe_float(power.get("battery_drain_pct_per_hr"), 0.0),
+                mtbf_hours=None
+                if health.get("mtbf_hours") is None
+                else safe_float(health.get("mtbf_hours"), 0.0),
+                uptime_hours=None
+                if health.get("uptime_hours") is None
+                else safe_float(health.get("uptime_hours"), 0.0),
+            )
+
+            self.nodes_by_name[name] = node
+            self._nodes_fingerprint[f"{name}.yaml"] = time.time()
+            self._update_predictive_for_node_locked(name)
+            self._invalidate_snapshot_locked()
+            self._emit_event(
+                "fabric.node.added",
+                {
+                    "node": name,
+                    "persisted": bool(persist),
+                    "preserve_runtime": bool(preserve_runtime),
+                },
+                subject=name,
+            )
+
+        if persist:
+            target = self.nodes_dir / f"{name}.yaml"
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(yaml.safe_dump(disk_descriptor, sort_keys=False), encoding="utf-8")
+                with self._lock:
+                    try:
+                        self._nodes_fingerprint[target.name] = target.stat().st_mtime
+                        self._nodes_mtime = max(self._nodes_mtime, self._nodes_fingerprint[target.name])
+                    except FileNotFoundError:
+                        pass
+            except Exception as exc:
+                print(f"[state] WARN: failed to persist node {name}: {exc}")
+
+        return self.get_node(name) or {}
+
+    def node_headroom(self, name: str) -> Optional[Dict[str, float]]:
+        """Return instantaneous capacity/free headroom metrics for a node."""
+
+        with self._lock:
+            node = self.nodes_by_name.get(name)
+            if not node:
+                return None
+            eff = self._effective_caps(node)
+            return {
+                "max_cpu_cores": eff.get("max_cpu_cores", 0.0),
+                "max_mem_gb": eff.get("max_mem_gb", 0.0),
+                "max_gpu_vram_gb": eff.get("max_gpu_vram_gb", 0.0),
+                "free_cpu_cores": eff.get("free_cpu_cores", 0.0),
+                "free_mem_gb": eff.get("free_mem_gb", 0.0),
+                "free_gpu_vram_gb": eff.get("free_gpu_vram_gb", 0.0),
+            }
+
+    def reservations_view(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Return a copy of all reservations grouped by node."""
+
+        with self._lock:
+            out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+            for name, node in self.nodes_by_name.items():
+                dyn = node.get("dyn") or {}
+                reservations = dyn.get("reservations") or {}
+                if not reservations:
+                    continue
+                out[name] = {rid: dict(info) for rid, info in reservations.items()}
+            return out
+
     # -------- public API (write/update) --------
 
     def apply_observation(self, payload: Dict[str, Any]) -> None:

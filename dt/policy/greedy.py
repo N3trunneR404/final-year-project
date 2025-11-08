@@ -324,25 +324,25 @@ class GreedyPlanner:
                     continue
                 reservations.append({"node": best_name, "reservation_id": res_id})
 
-        rec = {"id": sid, "node": best_name, "reservation_id": res_id, **best_metrics}
-        per_stage.append(rec)
-        assignments[sid] = best_name
-        prev_node = best_name
+            rec = {"id": sid, "node": best_name, "reservation_id": res_id, **best_metrics}
+            per_stage.append(rec)
+            assignments[sid] = best_name
+            prev_node = best_name
 
-        if self.bandit and best_metrics.get("format"):
-            try:
-                node_obj = self.state.nodes_by_name.get(best_name) or {}
-                self.bandit.record_outcome(
-                    st,
-                    node_obj,
-                    best_metrics.get("format"),
-                    best_metrics.get("compute_ms"),
-                    energy_kj=best_metrics.get("energy_kj"),
-                    risk=best_metrics.get("risk"),
-                )
-            except Exception:
-                # Bandit learning is opportunistic; ignore telemetry failures.
-                pass
+            if self.bandit and best_metrics.get("format"):
+                try:
+                    node_obj = self.state.nodes_by_name.get(best_name) or {}
+                    self.bandit.record_outcome(
+                        st,
+                        node_obj,
+                        best_metrics.get("format"),
+                        best_metrics.get("compute_ms"),
+                        energy_kj=best_metrics.get("energy_kj"),
+                        risk=best_metrics.get("risk"),
+                    )
+                except Exception:
+                    # Bandit learning is opportunistic; ignore telemetry failures.
+                    pass
 
         # End-to-end cost using CM (adds up compute+xfer & aggregates)
         job_cost = self.cm.job_cost(job, assignments)

@@ -40,6 +40,8 @@ from .policy.resilient import FederatedPlanner
 from .policy.mdp import MarkovPlanner
 from .policy.rl_stub import RLPolicy
 from .policy.greedy import GreedyPlanner
+from .self_heal import ResourceGuardian, SelfHealingController
+from .noise import maybe_start_noise
 
 try:
     from .policy.bandit import BanditPolicy
@@ -102,6 +104,23 @@ GREEDY_BANDIT = GreedyPlanner(
         "require_format_match": False,
     },
 )
+
+SELF_HEALER = SelfHealingController(
+    STATE,
+    poll_interval=safe_float(os.environ.get("FABRIC_SELF_HEAL_INTERVAL", 2.5), 2.5),
+    reliability_threshold=safe_float(os.environ.get("FABRIC_SELF_HEAL_RELIABILITY", 0.75), 0.75),
+    availability_threshold_sec=safe_float(os.environ.get("FABRIC_SELF_HEAL_AVAIL", 90.0), 90.0),
+    stability_window=int(safe_float(os.environ.get("FABRIC_SELF_HEAL_STABILITY", 2), 2)),
+)
+
+RESOURCE_GUARDIAN = ResourceGuardian(
+    STATE,
+    poll_interval=safe_float(os.environ.get("FABRIC_GUARDIAN_INTERVAL", 5.0), 5.0),
+    utilization_threshold=safe_float(os.environ.get("FABRIC_GUARDIAN_UTIL", 0.92), 0.92),
+    reservation_ttl_sec=safe_float(os.environ.get("FABRIC_GUARDIAN_TTL", 300.0), 300.0),
+)
+
+NOISE_INJECTOR = maybe_start_noise(STATE)
 
 RECENT_PLANS: Deque[Dict[str, Any]] = deque(maxlen=200)
 
@@ -206,6 +225,9 @@ def plan():
     job = body.get("job")
     if not job:
         return _err("missing 'job'")
+    stages = job.get("stages") or []
+    if not stages:
+        return _err("job.stages is empty")
 
     try:
         strategy_raw = body.get("strategy") or "greedy"
@@ -249,6 +271,13 @@ def plan():
         planner_result["ts"] = int(time.time() * 1000)
         planner_result.setdefault("avg_reliability", planner_result.get("avg_reliability"))
         planner_result["predictive"] = STATE.predictive_overview()
+        planner_result["self_healing_registered"] = False
+        if not dry_run:
+            try:
+                SELF_HEALER.register_plan(job, planner_result)
+                planner_result["self_healing_registered"] = True
+            except Exception:
+                app.logger.exception("failed to register plan with self-healer")
         RECENT_PLANS.appendleft(planner_result)
         return _ok(planner_result)
     except Exception:
@@ -354,8 +383,30 @@ def release():
         rid = r.get("reservation_id")
         if node and rid:
             ok = STATE.release(node, rid)
+            if ok:
+                SELF_HEALER.forget_reservation(rid)
             done.append({"node": node, "reservation_id": rid, "released": bool(ok)})
     return _ok({"released": done})
+
+
+@app.post("/add_node")
+def add_node():
+    if not request.is_json:
+        return _err("expected JSON body")
+    body = request.get_json() or {}
+    descriptor = body.get("node")
+    if not isinstance(descriptor, dict):
+        return _err("missing 'node'")
+    persist = bool(body.get("persist", True))
+    preserve_runtime = bool(body.get("preserve_runtime", True))
+    try:
+        node = STATE.add_or_update_node(descriptor, persist=persist, preserve_runtime=preserve_runtime)
+        return _ok({"node": node.get("name"), "persisted": persist})
+    except ValueError as exc:
+        return _err(str(exc))
+    except Exception:
+        app.logger.exception("/add_node failed")
+        return _err("add_node failed", status=500)
 
 
 # -----------------------------------
