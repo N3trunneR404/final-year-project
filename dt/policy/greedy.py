@@ -72,6 +72,10 @@ DEFAULT_CFG = {
     "energy_weight": 0.0,         # set >0 to trade some latency for energy
     "prefer_locality_bonus_ms": 0.0,  # subtract this if stage stays on prev node
     "require_format_match": False,    # if True, node must support stage.allowed_formats
+    "reliability_weight": 1200.0,
+    "churn_penalty_ms": 250.0,
+    "stickiness_weight": 0.75,
+    "redundancy": 1,
 }
 
 
@@ -138,6 +142,10 @@ class GreedyPlanner:
         risk_weight: float,
         energy_weight: float,
         require_format_match: bool,
+        reliability_weight: float,
+        churn_penalty_ms: float,
+        stickiness_weight: float,
+        previous_assignment: Optional[str],
     ) -> Tuple[float, Dict[str, Any]]:
         node = self.state.nodes_by_name[node_name]
 
@@ -159,12 +167,34 @@ class GreedyPlanner:
         energy  = self.cm.energy_kj(stage_eval, node, comp_ms)
         risk    = self.cm.risk_score(stage_eval, node)
 
+        reliability = None
+        availability = None
+        try:
+            reliability = self.state.node_reliability(node_name)
+        except Exception:
+            pass
+        try:
+            availability = self.state.node_availability_window(node_name)
+        except Exception:
+            availability = None
+
+        if reliability is not None:
+            risk_penalty = reliability_weight * max(0.0, 1.0 - float(reliability))
+        else:
+            risk_penalty = 0.0
+        churn_penalty = 0.0
+        if availability is not None:
+            if availability < 120.0:
+                churn_penalty += churn_penalty_ms * (1.0 - max(0.0, availability) / 120.0)
+
         # Greedy score
-        score = comp_ms + xfer_ms + risk_weight * risk + energy_weight * energy
+        score = comp_ms + xfer_ms + risk_weight * risk + energy_weight * energy + risk_penalty + churn_penalty
 
         # Locality preference (keep stages on same node if ties)
         if prev_node and prev_node == node_name and prefer_locality_bonus_ms > 0:
             score -= prefer_locality_bonus_ms
+        if previous_assignment and node_name == previous_assignment:
+            score -= stickiness_weight
 
         metrics = {
             "format": fmt_override,
@@ -172,6 +202,8 @@ class GreedyPlanner:
             "xfer_ms": round(xfer_ms, 3),
             "energy_kj": round(energy, 5),
             "risk": round(risk, 4),
+            "reliability": None if reliability is None else round(float(reliability), 4),
+            "availability_window_sec": None if availability is None else round(float(availability), 3),
             "score": round(score, 3),
         }
         return score, metrics
@@ -197,10 +229,16 @@ class GreedyPlanner:
         energy_w = float(self.cfg["energy_weight"])
         loc_bonus = float(self.cfg["prefer_locality_bonus_ms"])
         require_fmt = bool(self.cfg["require_format_match"])
+        reliability_weight = float(self.cfg.get("reliability_weight", 0.0))
+        churn_penalty_ms = float(self.cfg.get("churn_penalty_ms", 0.0))
+        stickiness_weight = float(self.cfg.get("stickiness_weight", 0.0))
+        redundancy = max(1, int(job.get("redundancy") or self.cfg.get("redundancy", 1)))
 
         assignments: Dict[str, str] = {}
         per_stage: List[Dict[str, Any]] = []
         reservations: List[Dict[str, str]] = []
+        fallback_summary: Dict[str, List[Dict[str, Any]]] = {}
+        prev_assignments = job.get("previous_assignments") or {}
 
         prev_node: Optional[str] = None
         infeasible = False
@@ -213,12 +251,15 @@ class GreedyPlanner:
                 prev_node = None
                 continue
 
+            nodes_view = self.state.nodes_for_planner()
             best_name = None
             best_score = float("inf")
             best_metrics: Dict[str, Any] = {}
 
+            candidates: List[Tuple[float, str, Dict[str, Any]]] = []
+
             # Scan candidates
-            for name, node in self.state.nodes_by_name.items():
+            for name, node in nodes_view.items():
                 if not _fits(self.state, node, st):
                     continue
                 sc, met = self._score_candidate(
@@ -227,17 +268,43 @@ class GreedyPlanner:
                     risk_weight=risk_w,
                     energy_weight=energy_w,
                     require_format_match=require_fmt,
+                    reliability_weight=reliability_weight,
+                    churn_penalty_ms=churn_penalty_ms,
+                    stickiness_weight=stickiness_weight,
+                    previous_assignment=prev_assignments.get(sid),
                 )
-                if sc < best_score:
-                    best_score = sc
-                    best_name = name
-                    best_metrics = met
+                if sc == float("inf"):
+                    continue
+                candidates.append((sc, name, met))
+
+            candidates.sort(key=lambda x: x[0])
+            if candidates:
+                best_score, best_name, best_metrics = candidates[0]
+            else:
+                best_score = float("inf")
+                best_name = None
+                best_metrics = {}
 
             if best_name is None or best_score == float("inf"):
                 per_stage.append({"id": sid, "node": None, "infeasible": True, "reason": "no_feasible_node"})
                 infeasible = True
                 prev_node = None
                 continue
+
+            if redundancy > 1 and len(candidates) > 1:
+                fallbacks = [
+                    {
+                        "node": cand_name,
+                        "score": round(score, 3),
+                        "reliability": cand_metrics.get("reliability"),
+                        "availability_window_sec": cand_metrics.get("availability_window_sec"),
+                    }
+                    for score, cand_name, cand_metrics in candidates[1:redundancy]
+                ]
+                if fallbacks:
+                    fallback_summary[sid] = fallbacks
+                    best_metrics = dict(best_metrics)
+                    best_metrics["fallbacks"] = fallbacks
 
             # Try reservation unless dry_run
             res_id = None
@@ -257,10 +324,25 @@ class GreedyPlanner:
                     continue
                 reservations.append({"node": best_name, "reservation_id": res_id})
 
-            rec = {"id": sid, "node": best_name, "reservation_id": res_id, **best_metrics}
-            per_stage.append(rec)
-            assignments[sid] = best_name
-            prev_node = best_name
+        rec = {"id": sid, "node": best_name, "reservation_id": res_id, **best_metrics}
+        per_stage.append(rec)
+        assignments[sid] = best_name
+        prev_node = best_name
+
+        if self.bandit and best_metrics.get("format"):
+            try:
+                node_obj = self.state.nodes_by_name.get(best_name) or {}
+                self.bandit.record_outcome(
+                    st,
+                    node_obj,
+                    best_metrics.get("format"),
+                    best_metrics.get("compute_ms"),
+                    energy_kj=best_metrics.get("energy_kj"),
+                    risk=best_metrics.get("risk"),
+                )
+            except Exception:
+                # Bandit learning is opportunistic; ignore telemetry failures.
+                pass
 
         # End-to-end cost using CM (adds up compute+xfer & aggregates)
         job_cost = self.cm.job_cost(job, assignments)
@@ -274,6 +356,13 @@ class GreedyPlanner:
             "energy_kj": job_cost.get("energy_kj", 0.0),
             "risk": job_cost.get("risk", 1.0),
             "infeasible": infeasible or (job_cost.get("latency_ms") == float("inf")),
+            "fallbacks": fallback_summary,
+            "avg_reliability": job_cost.get("avg_reliability"),
         }
+        if self.bandit and not dry_run:
+            try:
+                self.bandit.save()
+            except Exception:
+                pass
         return out
 

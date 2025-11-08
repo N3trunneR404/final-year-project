@@ -85,15 +85,24 @@ DEFAULTS = {
     "UTIL_TO_POWER_EXP": 0.85,     # sub-linear utilization→power curve
 
     # Risk model weights
-    "R_W_TRUST": 0.35,
-    "R_W_SSD_WEAR": 0.20,
-    "R_W_CRASH": 0.20,
+    "R_W_TRUST": 0.25,
+    "R_W_SSD_WEAR": 0.15,
+    "R_W_CRASH": 0.15,
     "R_W_THERMAL": 0.15,
     "R_W_LINK_LOSS": 0.10,
+    "R_W_RELIABILITY": 0.20,
 
     # SLO penalty
     "SLO_ALPHA": 1.2,              # curvature (>=1 mildly convex)
     "SLO_BETA": 0.002,             # scale (ms^-1)
+
+    # Predictive adjustments
+    "RELIABILITY_FAILURE_PEN_MS": 6000.0,
+    "RELIABILITY_MIN": 0.35,
+    "UTIL_PREDICT_WEIGHT": 0.35,
+    "DERATE_LOOKAHEAD_SEC": 600.0,
+    "AVAILABILITY_GRACE_SEC": 15.0,
+    "LINK_P95_WEIGHT": 0.35,
 }
 
 
@@ -161,7 +170,45 @@ class CostModel:
             safe_float(dyn.get("thermal_derate"), 0.0),
             safe_float((node.get("health") or {}).get("thermal_derate"), 0.0),
         )
+        projected = safe_float((node.get("predictive") or {}).get("projected_derate"), None)
+        if projected is None and hasattr(self.state, "predict_node_derate"):
+            try:
+                projected = safe_float(self.state.predict_node_derate(node.get("name", "")), None)
+            except Exception:
+                projected = None
+        if projected is not None:
+            derate = max(derate, clamp(projected, 0.0, 1.0))
         return max(0.0, base * (1.0 - clamp(derate, 0.0, 1.0)))
+
+    def _current_reliability(self, node: Dict[str, Any]) -> Optional[float]:
+        predictive = node.get("predictive") or {}
+        dyn = node.get("dyn") or {}
+        reliability = predictive.get("reliability")
+        if reliability is None:
+            reliability = dyn.get("reliability")
+        if reliability is None and hasattr(self.state, "node_reliability"):
+            try:
+                reliability = self.state.node_reliability(node.get("name", ""))
+            except Exception:
+                reliability = None
+        if reliability is None:
+            return None
+        return clamp(safe_float(reliability, 0.95), 0.0, 1.0)
+
+    def _current_availability(self, node: Dict[str, Any]) -> Optional[float]:
+        predictive = node.get("predictive") or {}
+        dyn = node.get("dyn") or {}
+        availability = predictive.get("availability_window_sec")
+        if availability is None:
+            availability = dyn.get("availability_window_sec")
+        if availability is None and hasattr(self.state, "node_availability_window"):
+            try:
+                availability = self.state.node_availability_window(node.get("name", ""))
+            except Exception:
+                availability = None
+        if availability is None:
+            return None
+        return max(0.0, safe_float(availability, 0.0))
 
     def _accel_multiplier(self, node: Dict[str, Any], stage: Dict[str, Any]) -> float:
         """
@@ -220,6 +267,34 @@ class CostModel:
         # Smaller score => faster; divide by cpu scale and accel
         t = work / max(1.0, (cpu_units / self.cfg["CPU_UNIT_DIVISOR"])) / max(1.0, accel)
         # Respect minimal latency floor
+        predictive = node.get("predictive") or {}
+        dyn = node.get("dyn") or {}
+        util_forecast = predictive.get("util_forecast")
+        if util_forecast is None:
+            util_forecast = dyn.get("util_forecast")
+        try:
+            if util_forecast is None and hasattr(self.state, "predictive_overview"):
+                overview = self.state.predictive_overview()
+                util_forecast = (
+                    (overview.get("nodes", {}).get(node.get("name", ""), {}) or {}).get("util_forecast")
+                )
+        except Exception:
+            util_forecast = None
+        if util_forecast is not None:
+            t *= 1.0 + clamp(safe_float(util_forecast, 0.0), 0.0, 1.0) * self.cfg["UTIL_PREDICT_WEIGHT"]
+
+        reliability = self._current_reliability(node)
+        if reliability is not None:
+            if reliability < self.cfg["RELIABILITY_MIN"]:
+                return float("inf")
+            t += (1.0 - reliability) * self.cfg["RELIABILITY_FAILURE_PEN_MS"]
+
+        availability = self._current_availability(node)
+        if availability is not None:
+            available_ms = max(0.0, availability - self.cfg["AVAILABILITY_GRACE_SEC"]) * 1000.0
+            if available_ms > 0 and t > available_ms:
+                return float("inf")
+
         return max(self.cfg["MIN_STAGE_MS"], t)
 
     def _effective_link_metrics(self, a: str, b: str) -> Dict[str, float]:
@@ -254,7 +329,22 @@ class CostModel:
         loss_pen = 1.0 - clamp(m["loss_pct"] / 100.0, 0.0, self.cfg["LOSS_PENALTY_CEIL"])
         eff_mbps = mbps_phy * self.cfg["PROTO_OVERHEAD"] * loss_pen
         xfer = (size_mb * 8.0) / max(1.0, eff_mbps) * 1000.0  # ms
-        return xfer + m["rtt_ms"] + m["jitter_ms"]
+        base_latency = xfer + m["rtt_ms"] + m["jitter_ms"]
+        variability = None
+        if hasattr(self.state, "link_variability"):
+            try:
+                variability = self.state.link_variability(src, dst)
+            except Exception:
+                variability = None
+        if variability:
+            p95 = variability.get("latency_p95_ms")
+            if p95 is not None:
+                base_latency = max(base_latency, safe_float(p95, base_latency))
+            else:
+                base_latency += safe_float(variability.get("jitter_ms"), 0.0) * self.cfg["LINK_P95_WEIGHT"]
+            if safe_float(variability.get("loss_pct"), 0.0) >= 30.0:
+                return float("inf")
+        return base_latency
 
     # ---------- energy & risk ----------
 
@@ -272,7 +362,13 @@ class CostModel:
             safe_float((node.get("dyn") or {}).get("thermal_derate"), 0.0),
             safe_float((node.get("health") or {}).get("thermal_derate"), 0.0),
         )
+        predictive = node.get("predictive") or {}
+        util_forecast = predictive.get("util_forecast")
+        if util_forecast is None:
+            util_forecast = (node.get("dyn") or {}).get("util_forecast")
         util_eff = clamp(util * (1.0 + 0.2 * der), 0.0, 1.0)
+        if util_forecast is not None:
+            util_eff = clamp(util_eff * (1.0 + clamp(safe_float(util_forecast, 0.0), 0.0, 1.0) * 0.25), 0.0, 1.0)
 
         idle_w = tdp * self.cfg["IDLE_FRACTION"]
         active_w = (tdp - idle_w) * (util_eff ** self.cfg["UTIL_TO_POWER_EXP"])
@@ -295,10 +391,20 @@ class CostModel:
         crashes = safe_float((node.get("health") or {}).get("last_week_crashes"), 0.0)
         crash_term = clamp(crashes / 5.0, 0.0, 1.0)  # 5+ crashes → max
 
+        dyn = node.get("dyn") or {}
         thermal = max(
-            safe_float((node.get("dyn") or {}).get("thermal_derate"), 0.0),
+            safe_float(dyn.get("thermal_derate"), 0.0),
             safe_float((node.get("health") or {}).get("thermal_derate"), 0.0),
         )
+
+        reliability = self._current_reliability(node)
+        reliability_term = 1.0 - reliability if reliability is not None else 0.0
+
+        availability = self._current_availability(node)
+        availability_term = 0.0
+        if availability is not None:
+            # < 2 minutes availability increases risk significantly
+            availability_term = clamp(max(0.0, 120.0 - availability) / 120.0, 0.0, 1.0)
 
         link_term = clamp(link_loss_pct / 5.0, 0.0, 1.0)  # 5%+ loss → max
 
@@ -308,7 +414,9 @@ class CostModel:
             w["R_W_SSD_WEAR"]* clamp(ssd_wear, 0.0, 1.0) +
             w["R_W_CRASH"]   * crash_term +
             w["R_W_THERMAL"] * clamp(thermal, 0.0, 1.0) +
-            w["R_W_LINK_LOSS"] * link_term
+            w["R_W_LINK_LOSS"] * link_term +
+            w["R_W_RELIABILITY"] * reliability_term +
+            0.15 * availability_term
         )
         return clamp(r, 0.0, 1.0)
 
@@ -361,6 +469,8 @@ class CostModel:
             comp_ms = self.compute_time_ms(st, node)
             en_kj = self.energy_kj(st, node, comp_ms)
             risk = self.risk_score(st, node, link_loss_pct=link_loss)
+            reliability = self._current_reliability(node)
+            availability = self._current_availability(node)
 
             results.append({
                 "id": sid,
@@ -369,6 +479,8 @@ class CostModel:
                 "xfer_ms": round(xfer_ms, 3),
                 "energy_kj": round(en_kj, 5),
                 "risk": round(risk, 4),
+                "reliability": None if reliability is None else round(reliability, 4),
+                "availability_window_sec": None if availability is None else round(availability, 3),
             })
 
             if isfinite(comp_ms) and isfinite(xfer_ms):
@@ -381,11 +493,22 @@ class CostModel:
             prev_node = node_name
 
         agg_risk = sum(risks) / max(1, len(risks)) if risks else 1.0
+        reliability_vals = [
+            entry.get("reliability")
+            for entry in results
+            if entry.get("reliability") is not None
+        ]
+        avg_reliability = (
+            sum(reliability_vals) / len(reliability_vals)
+            if reliability_vals
+            else None
+        )
 
         return {
             "latency_ms": round(total_ms, 3),
             "energy_kj": round(total_kj, 5),
             "risk": round(agg_risk, 4),
+            "avg_reliability": None if avg_reliability is None else round(avg_reliability, 4),
             "per_stage": results,
         }
 
