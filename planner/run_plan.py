@@ -228,7 +228,7 @@ def print_summary(results: List[Dict[str, Any]]):
             fmt_ratio(spread),
             fmt_pct(resilience),
             fmt_pct(cross),
-            '✅' if not r.get('infeasible') else '❌',
+            'ok' if not r.get('infeasible') else 'not ok',
             stages_str or '—',
         )
     console.print(tbl)  # type: ignore
