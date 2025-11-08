@@ -30,7 +30,7 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
-
+import logging
 from flask import Flask, jsonify, request
 
 from .state import DTState, safe_float, safe_int
@@ -185,7 +185,8 @@ def observe():
         STATE.apply_observation(payload)
         return _ok({"applied": True})
     except Exception as e:
-        return _err(f"observe failed: {e}")
+        logging.exception("Exception in /observe endpoint")
+        return _err("observe failed: internal error")
 
 
 @app.post("/plan")
