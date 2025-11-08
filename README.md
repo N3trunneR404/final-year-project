@@ -90,19 +90,19 @@ virtual environment for you.
      ```bash
      make demo NUM=25 WORKERS=4 QPS=2.0
      ```
-  Planner strategies can be swapped at runtime via `--strategy`. In addition to
-  the original greedy and `cheapest-energy` modes, the CLI and dashboard expose
-  `bandit` (greedy placement with a UCB1 format bandit), `resilient`,
-  `network-aware`, `balanced`, and `federated` strategies powered by
-  `dt/policy/resilient.FederatedPlanner`. These compute fallback placements,
-  penalise saturated federations, and consider link loss/latency when
-  dispatching multi-stage jobs. A new `rl-markov` strategy plugs into
-  `dt/policy/mdp.MarkovPlanner`, which solves a discounted Markov decision
-  process over the stages, aggregates latency/energy/risk via a weighted
-  Tchebycheff score, and keeps learning through the embedded reinforcement
-  learner between planning runs. The dashboard’s job catalog now includes a
-  “Plan entire catalog” shortcut so you can replay every YAML with whichever
-  policy you are comparing.
+  Planner strategies can be swapped at runtime via `--strategy` or the
+  dashboard selector. In addition to the original greedy and
+  `cheapest-energy` modes, the CLI and UI surface `bandit` (greedy placement
+  with a UCB1 format bandit), `rl-markov` (the Markov decision-process
+  planner backed by the reinforcement learner), and the network-aware
+  `resilient`/`federated` family from
+  `dt/policy/resilient.FederatedPlanner`. Every plan response now carries the
+  predictive snapshot (per-node utilisation trends, availability windows, and
+  reliability), the average reliability observed across stages, and explicit
+  fallback recommendations when redundancy is requested. The dashboard’s job
+  catalog includes a “Plan entire catalog” shortcut so you can replay every
+  YAML with whichever policy you are comparing and immediately inspect the
+  resulting reliability plots in the UI.
 
 4. **Inject chaos and observe feedback**
    ```bash
@@ -116,24 +116,31 @@ virtual environment for you.
    `federation_partition` will coordinate outages across sets of nodes or
    federations so you can validate the federation-aware planner. The DT watcher
    thread merges the overrides into the live state so subsequent plans reflect
-   the new conditions.
+   the new conditions while the predictive model updates reliability, link
+   latency P95 estimates, and availability windows that flow straight into the
+   planners and dashboard.
 
 5. **Analyse outcomes**
    * `sim/montecarlo.py` perturbs nodes/links and repeatedly plans jobs.
    * `tools/export_csv.py` summarises Monte-Carlo CSVs (requires numpy/pandas).
    * `tools/policy_benchmark.py` evaluates one or more planner strategies over
      a job corpus (sampling the first few jobs by default for speed) and emits
-     publication-ready plots comparing latency, energy, risk, and infeasibility.
-     Run `make policy-benchmark` to generate `reports/policy_metrics.png` and a
-     matching JSON dump for your paper.
+     publication-ready plots comparing latency, energy, risk, reliability, and
+     infeasibility. Run `make policy-benchmark` to generate
+     `reports/policy_metrics.png` and a matching JSON dump for your paper.
    * `tools/summarize_nodes.py` and `tools/validate_nodes.py` help curate inputs.
 
 ## Key components
 
 * `dt/state.py` – thread-safe runtime that keeps nodes, links, and reservations
   in sync while watching for filesystem overrides.
-* `dt/cost_model.py` – deterministic latency, energy, and risk estimators used by
-  both the API and the planner.
+* `dt/cost_model.py` – deterministic latency, energy, risk, and reliability
+  estimators used by both the API and the planner.
+* `dt/predict.py` – lightweight predictive telemetry (EWMA + trends) for node
+  availability, reliability, and link variability.
+* `dt/events.py` – in-memory CloudEvents bus surfaced via the API.
+* `dt/exporters.py` – renders DTDL models and Kubernetes CRDs for external
+  tooling.
 * `dt/policy/greedy.py` – baseline planner that scans feasible nodes, optionally
   collaborates with a bandit format selector, and performs reservations.
 * `dt/policy/resilient.py` – network- and federation-aware planner that scores
@@ -167,3 +174,16 @@ virtual environment for you.
 
 With these pieces in place you can loop: generate nodes, schedule workloads,
 perturb the environment, and inspect outcomes – all inside one repository.
+
+## Real-time telemetry and standards exports
+
+* `GET /events?limit=100` streams recent CloudEvents (node updates, link
+  changes, reservations) so you can feed dashboards or tracing systems.
+* `GET /standards/dtdl` emits a Digital Twin Definition Language model of the
+  current fleet, suitable for importing into Azure Digital Twins or other DTDL
+  aware tooling.
+* `GET /standards/crds` exports Kubernetes `NodeTwin`/`LinkTwin` custom
+  resources so you can mirror the simulated state in a cluster.
+* Every `/plan` response includes `predictive` telemetry (utilisation trends,
+  reliability, availability) and fallback assignments, letting you reason about
+  proactive failover and churn-resilience directly from the API.

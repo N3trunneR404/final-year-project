@@ -737,6 +737,7 @@ hr { border: none; border-top: 1px solid #1f2a39; margin: 12px 0; }
           <th>Latency (ms)</th>
           <th>Energy (kJ)</th>
           <th>Risk</th>
+          <th>Reliability</th>
           <th>Spread / Federations</th>
           <th>Fallback Coverage</th>
           <th>Cross-fed Fallback</th>
@@ -1079,7 +1080,8 @@ function renderTopology() {
   if (LAST_PLAN && Array.isArray(LAST_PLAN.per_stage)) {
     LAST_PLAN.per_stage.forEach(stage => {
       if (!stage || !Array.isArray(stage.fallbacks)) return;
-      stage.fallbacks.forEach(name => {
+      stage.fallbacks.forEach(entry => {
+        const name = typeof entry === 'string' ? entry : (entry && entry.node) || null;
         if (!name) return;
         const prev = fallbackAssignments.get(name) || {count: 0, stages: []};
         prev.count += 1;
@@ -1324,14 +1326,24 @@ function renderPlanGraph() {
     const node = s.node || '—';
     const fmtBadge = s.format ? `<span class="fmt">${s.format}</span>` : '';
     const cls = s.infeasible ? 'stage-card bad' : 'stage-card';
-    const metrics = `<div class="metrics">c:${fmt(s.compute_ms,1)} ms • x:${fmt(s.xfer_ms,1)} ms</div>`;
+    const relMetric = s.reliability !== undefined && s.reliability !== null ? ` • rel:${fmt(s.reliability,2)}` : '';
+    const availMetric = s.availability_window_sec !== undefined && s.availability_window_sec !== null ? ` • avail:${fmt(s.availability_window_sec,2)}s` : '';
+    const metrics = `<div class="metrics">c:${fmt(s.compute_ms,1)} ms • x:${fmt(s.xfer_ms,1)} ms${relMetric}${availMetric}</div>`;
     const reason = s.infeasible && s.reason ? `<div class="small">${s.reason}</div>` : '';
     const badgeHtml = s.infeasible ? `<div class="badge bad">Blocked</div>` : '';
     const fallbackNodes = Array.isArray(s.fallbacks) ? s.fallbacks : [];
     const fallbackFeds = Array.isArray(s.fallback_federations) ? s.fallback_federations : [];
-    const fallbackPairs = fallbackNodes.map((name, idx) => {
+    const fallbackPairs = fallbackNodes.map((entry, idx) => {
+      const name = typeof entry === 'string' ? entry : (entry && entry.node) || '—';
+      const rel = entry && typeof entry === 'object' && entry.reliability !== undefined && entry.reliability !== null
+        ? ` rel:${fmt(entry.reliability,2)}`
+        : '';
+      const avail = entry && typeof entry === 'object' && entry.availability_window_sec !== undefined && entry.availability_window_sec !== null
+        ? ` avail:${fmt(entry.availability_window_sec,2)}s`
+        : '';
       const fed = fallbackFeds[idx];
-      return `<span class="mono">${name}</span>${fed ? tag(`fed:${fed}`) : ''}`;
+      const fedTag = fed ? tag(`fed:${fed}`) : '';
+      return `<span class="mono">${name}</span>${fedTag}${rel}${avail}`;
     }).join(' ');
     const fallback = fallbackPairs
       ? `<div class="small">Fallback: ${fallbackPairs}</div>`
@@ -1342,7 +1354,8 @@ function renderPlanGraph() {
   wrap.innerHTML = `<div class="dag-row">${parts}</div>`;
   const spreadStr = LAST_PLAN && LAST_PLAN.federation_spread !== undefined && LAST_PLAN.federation_spread !== null ? ` • Spread ${fmt(LAST_PLAN.federation_spread,2)}` : '';
   const resilienceStr = LAST_PLAN && LAST_PLAN.resilience_score !== undefined && LAST_PLAN.resilience_score !== null ? ` • Resilience ${fmtPct(LAST_PLAN.resilience_score)}` : '';
-  wrap.insertAdjacentHTML('beforeend', `<div class="small" style="margin-top:6px;">Latency ${fmt(LAST_PLAN.latency_ms,1)} ms • Energy ${fmt(LAST_PLAN.energy_kj,3)} kJ • Risk ${fmt(LAST_PLAN.risk,3)}${spreadStr}${resilienceStr}</div>`);
+  const reliabilityStr = LAST_PLAN && LAST_PLAN.avg_reliability !== undefined && LAST_PLAN.avg_reliability !== null ? ` • Reliability ${fmt(LAST_PLAN.avg_reliability,2)}` : '';
+  wrap.insertAdjacentHTML('beforeend', `<div class="small" style="margin-top:6px;">Latency ${fmt(LAST_PLAN.latency_ms,1)} ms • Energy ${fmt(LAST_PLAN.energy_kj,3)} kJ • Risk ${fmt(LAST_PLAN.risk,3)}${spreadStr}${resilienceStr}${reliabilityStr}</div>`);
 }
 
 function renderPlans() {
@@ -1357,10 +1370,17 @@ function renderPlans() {
         const inf = s.infeasible ? badge('X','bad') : '';
         const fallbackNodes = Array.isArray(s.fallbacks) ? s.fallbacks : [];
         const fallbackFeds = Array.isArray(s.fallback_federations) ? s.fallback_federations : [];
-        const fallbackPairs = fallbackNodes.map((name, idx) => {
+        const fallbackPairs = fallbackNodes.map((entry, idx) => {
+          const name = typeof entry === 'string' ? entry : (entry && entry.node) || '—';
+          const rel = entry && typeof entry === 'object' && entry.reliability !== undefined && entry.reliability !== null
+            ? ` rel:${fmt(entry.reliability,2)}`
+            : '';
+          const avail = entry && typeof entry === 'object' && entry.availability_window_sec !== undefined && entry.availability_window_sec !== null
+            ? ` avail:${fmt(entry.availability_window_sec,2)}s`
+            : '';
           const fed = fallbackFeds[idx];
           const fedTag = fed ? tag(`fed:${fed}`) : '';
-          return `<span class="mono">${name}</span>${fedTag}`;
+          return `<span class="mono">${name}</span>${fedTag}${rel}${avail}`;
         }).join(' ');
         const fallbackHtml = fallbackPairs ? `<div class="small">Fallback: ${fallbackPairs}</div>` : '';
         const fedTag = s.federation ? `<div class="small">Federation: ${s.federation}</div>` : '';
@@ -1368,7 +1388,9 @@ function renderPlans() {
         const load = s.load_factor !== undefined && s.load_factor !== null ? `<span class="mono">load:${fmt(s.load_factor,2)}</span>` : '';
         const net = s.network_penalty !== undefined && s.network_penalty !== null ? `<span class="mono">net:${fmt(s.network_penalty,2)}</span>` : '';
         const score = s.expected_cost !== undefined && s.expected_cost !== null ? `<span class="mono">J:${fmt(s.expected_cost,3)}</span>` : '';
-        const extras = [load, net, score].filter(Boolean).join(' ');
+        const relMetric = s.reliability !== undefined && s.reliability !== null ? `<span class="mono">rel:${fmt(s.reliability,2)}</span>` : '';
+        const availMetric = s.availability_window_sec !== undefined && s.availability_window_sec !== null ? `<span class="mono">avail:${fmt(s.availability_window_sec,2)}s</span>` : '';
+        const extras = [load, net, score, relMetric, availMetric].filter(Boolean).join(' ');
         const metrics = `<span class="mono">c:${fmt(s.compute_ms,1)}ms</span> <span class="mono">x:${fmt(s.xfer_ms,1)}ms</span>`;
         const extraLine = extras ? `<div class="small">${extras}</div>` : '';
         return `<div class="small"><span class="mono">${s.id||'?'}</span> → <b>${nodeName}</b> ${fmtTag} ${inf} ${metrics}${extraLine}${fallbackHtml}${fedTag}${reason}<\/div>`;
@@ -1378,12 +1400,14 @@ function renderPlans() {
       const spreadCell = `${spreadVal}${feds ? `<div class="small">${feds}</div>` : ''}`;
       const resilienceVal = p.resilience_score !== null && p.resilience_score !== undefined ? fmtPct(p.resilience_score) : '—';
       const crossVal = p.cross_federation_fallback_ratio !== null && p.cross_federation_fallback_ratio !== undefined ? fmtPct(p.cross_federation_fallback_ratio) : '—';
+      const reliabilityVal = p.avg_reliability !== null && p.avg_reliability !== undefined ? fmt(p.avg_reliability,2) : '—';
       tb.insertAdjacentHTML('beforeend', `
         <tr>
           <td><div class="mono">${p.job_id||'—'}</div><div class="small">${p.strategy||'greedy'} ${p.dry_run?'(dry)':''}</div></td>
           <td>${fmt(p.latency_ms,1)}</td>
           <td>${fmt(p.energy_kj,3)}</td>
           <td>${fmt(p.risk,3)}</td>
+          <td>${reliabilityVal}</td>
           <td>${spreadCell}</td>
           <td>${resilienceVal}</td>
           <td>${crossVal}</td>

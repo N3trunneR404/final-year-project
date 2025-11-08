@@ -103,24 +103,43 @@ def print_summary(results: List[Dict[str, Any]]):
             spread = r.get("federation_spread")
             resilience = r.get("resilience_score")
             cross = r.get("cross_federation_fallback_ratio")
+            avg_rel = r.get("avg_reliability")
             print(
                 f"\nJob {r.get('job_id')}: latency={r.get('latency_ms')}ms  energy={r.get('energy_kj')}kJ  risk={r.get('risk')}"
                 f" feasible={feasible} spread={fmt_ratio(spread)} resilience={fmt_pct(resilience)} cross_fallback={fmt_pct(cross)}"
+                f" reliability={fmt_ratio(avg_rel)}"
             )
             for s in (r.get("per_stage") or []):
                 fallbacks = s.get("fallbacks") or []
                 fallback_feds = s.get("fallback_federations") or []
-                fallback_pairs = [
-                    f"{node}({fed})" if fed else node for node, fed in zip(fallbacks, fallback_feds)
-                ]
-                if len(fallbacks) > len(fallback_pairs):
-                    fallback_pairs.extend(fallbacks[len(fallback_pairs):])
-                fallback_str = f" fallback={','.join(fallbacks)}" if fallbacks else ""
-                if fallback_pairs and fallback_pairs != fallbacks:
+                fallback_tokens: List[str] = []
+                if isinstance(fallbacks, list):
+                    for entry in fallbacks:
+                        if isinstance(entry, dict):
+                            node = entry.get("node") or "?"
+                            rel = entry.get("reliability")
+                            score = entry.get("score")
+                            token = node
+                            if rel is not None:
+                                token += f"(rel={float(rel):.2f})"
+                            if score is not None:
+                                token += f"@{float(score):.1f}"
+                            fallback_tokens.append(token)
+                        else:
+                            fallback_tokens.append(str(entry))
+                fallback_pairs: List[str] = []
+                if fallback_feds:
+                    for idx, fed in enumerate(fallback_feds):
+                        node_token = fallback_tokens[idx] if idx < len(fallback_tokens) else "?"
+                        fallback_pairs.append(f"{node_token}({fed})" if fed else node_token)
+                fallback_str = f" fallback={','.join(fallback_tokens)}" if fallback_tokens else ""
+                if fallback_pairs and fallback_pairs != fallback_tokens:
                     fallback_str += f" fallback_fed={','.join(fallback_pairs)}"
                 load_term = s.get("load_factor")
                 net_term = s.get("network_penalty")
                 exp_cost = s.get("expected_cost")
+                reliability = s.get("reliability")
+                availability = s.get("availability_window_sec")
                 extras = []
                 if load_term is not None:
                     extras.append(f"load={fmt_ratio(load_term)}")
@@ -131,6 +150,10 @@ def print_summary(results: List[Dict[str, Any]]):
                         extras.append(f"J={float(exp_cost):.3f}")
                     except Exception:
                         pass
+                if reliability is not None:
+                    extras.append(f"rel={fmt_ratio(reliability)}")
+                if availability is not None:
+                    extras.append(f"avail={fmt_ratio(availability)}s")
                 extra_str = f" ({', '.join(extras)})" if extras else ""
                 print(
                     f"  - {s.get('id')} → {s.get('node')}  fmt={s.get('format')}  c={s.get('compute_ms')}ms  x={s.get('xfer_ms')}ms  risk={s.get('risk')}{extra_str}{fallback_str}"
@@ -143,6 +166,7 @@ def print_summary(results: List[Dict[str, Any]]):
     tbl.add_column("Latency (ms)", justify="right")
     tbl.add_column("Energy (kJ)", justify="right")
     tbl.add_column("Risk", justify="right")
+    tbl.add_column("Reliability", justify="right")
     tbl.add_column("Spread", justify="right")
     tbl.add_column("Fallback", justify="right")
     tbl.add_column("Cross-fed", justify="right")
@@ -167,19 +191,29 @@ def print_summary(results: List[Dict[str, Any]]):
                     extras.append(f"J={float(s.get('expected_cost')):.3f}")
                 except Exception:
                     pass
+            if s.get("reliability") is not None:
+                extras.append(f"rel={fmt_ratio(s.get('reliability'))}")
+            if s.get("availability_window_sec") is not None:
+                extras.append(f"avail={fmt_ratio(s.get('availability_window_sec'))}s")
             if extras:
                 base += f" [{' | '.join(extras)}]"
             if s.get("fallbacks"):
                 fallbacks = s.get("fallbacks") or []
-                fallbacks_with_fed = []
-                feds = s.get("fallback_federations") or []
-                for idx, node in enumerate(fallbacks):
-                    fed = feds[idx] if idx < len(feds) else None
-                    if fed:
-                        fallbacks_with_fed.append(f"{node}({fed})")
+                formatted_fb: List[str] = []
+                for entry in fallbacks:
+                    if isinstance(entry, dict):
+                        node = entry.get("node") or "?"
+                        rel = entry.get("reliability")
+                        score = entry.get("score")
+                        token = node
+                        if rel is not None:
+                            token += f"(rel={float(rel):.2f})"
+                        if score is not None:
+                            token += f"@{float(score):.1f}"
+                        formatted_fb.append(token)
                     else:
-                        fallbacks_with_fed.append(node)
-                base += f" fallback→{', '.join(fallbacks_with_fed)}"
+                        formatted_fb.append(str(entry))
+                base += f" fallback→{', '.join(formatted_fb)}"
             stages_lines.append(base)
         stages_str = "\n".join(stages_lines)
         spread = r.get("federation_spread")
@@ -190,10 +224,11 @@ def print_summary(results: List[Dict[str, Any]]):
             f"{r.get('latency_ms')}",
             f"{r.get('energy_kj')}",
             f"{r.get('risk')}",
+            fmt_ratio(r.get("avg_reliability")),
             fmt_ratio(spread),
             fmt_pct(resilience),
             fmt_pct(cross),
-            '✅' if not r.get('infeasible') else '❌',
+            'ok' if not r.get('infeasible') else 'not ok',
             stages_str or '—',
         )
     console.print(tbl)  # type: ignore

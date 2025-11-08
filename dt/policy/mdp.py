@@ -31,13 +31,15 @@ from dt.state import DTState, safe_float
 
 @dataclass
 class PlannerWeights:
-    latency: float = 0.38
-    energy: float = 0.16
-    risk: float = 0.18
-    load: float = 0.12
-    network: float = 0.10
+    latency: float = 0.34
+    energy: float = 0.14
+    risk: float = 0.16
+    load: float = 0.10
+    network: float = 0.08
     federation: float = 0.06
-    rl: float = 0.06
+    rl: float = 0.04
+    reliability: float = 0.04
+    availability: float = 0.04
 
 
 class MarkovPlanner:
@@ -53,6 +55,9 @@ class MarkovPlanner:
         failure_penalty: float = 8.0,
         redundancy: int = 2,
         weights: Optional[PlannerWeights] = None,
+        availability_horizon_sec: float = 240.0,
+        unknown_reliability_penalty: float = 0.5,
+        unknown_availability_penalty: float = 0.5,
     ) -> None:
         self.state = state
         self.cm = cost_model
@@ -61,6 +66,9 @@ class MarkovPlanner:
         self.redundancy = max(1, int(redundancy))
         self.weights = weights or PlannerWeights()
         self.rl_policy = rl_policy
+        self.availability_horizon_sec = max(0.0, float(availability_horizon_sec))
+        self.unknown_reliability_penalty = max(0.0, float(unknown_reliability_penalty))
+        self.unknown_availability_penalty = max(0.0, float(unknown_availability_penalty))
 
     # ------------------------------------------------------------------
     # Public API
@@ -132,7 +140,15 @@ class MarkovPlanner:
 
             fallbacks = entry.get("fallbacks") or []
             if sid:
-                shadow_assignments[sid] = fallbacks
+                nodes_only = []
+                for fb in fallbacks:
+                    if isinstance(fb, dict):
+                        name = fb.get("node")
+                    else:
+                        name = fb
+                    if name:
+                        nodes_only.append(name)
+                shadow_assignments[sid] = nodes_only
             prev_node = node_name if assigned else None
 
         # Merge with authoritative cost model figures
@@ -168,6 +184,7 @@ class MarkovPlanner:
             "latency_ms": cost.get("latency_ms"),
             "energy_kj": cost.get("energy_kj"),
             "risk": cost.get("risk"),
+            "avg_reliability": cost.get("avg_reliability"),
             "deadline_ms": ddl or None,
             "slo_penalty": slo_penalty,
             "infeasible": infeasible or (cost.get("latency_ms") == float("inf")),
@@ -246,6 +263,7 @@ class MarkovPlanner:
                         total,
                         {
                             **metrics,
+                            "metrics": dict(metrics),
                             "child": child,
                             "immediate": immediate,
                             "breakdown": breakdown,
@@ -266,15 +284,27 @@ class MarkovPlanner:
 
             fallback_nodes: List[str] = []
             fallback_feds: List[str] = []
-            for _, payload in ranked[1 : 1 + self.redundancy - 1]:
-                fallback_nodes.append(payload["node"])
-                fallback_feds.append(payload.get("federation"))
+            fallback_entries: List[Dict[str, Any]] = []
+            for fallback_total, payload in ranked[1 : 1 + self.redundancy - 1]:
+                node_name = payload.get("node")
+                federation = payload.get("federation")
+                entry = {
+                    "node": node_name,
+                    "score": round(float(fallback_total), 6),
+                    "reliability": payload.get("reliability"),
+                    "availability_window_sec": payload.get("availability_window_sec"),
+                    "federation": federation,
+                }
+                fallback_entries.append(entry)
+                if node_name:
+                    fallback_nodes.append(node_name)
+                fallback_feds.append(federation)
 
             detail = {
                 "id": sid,
                 "node": best_name,
                 "federation": metrics.get("federation"),
-                "fallbacks": fallback_nodes,
+                "fallbacks": fallback_entries,
                 "fallback_federations": fallback_feds,
                 "rl_value": metrics.get("rl_value"),
                 "expected_cost": round(best_total, 6),
@@ -294,6 +324,14 @@ class MarkovPlanner:
                 "load_factor": round(metrics.get("load", 0.0), 6),
                 "network_penalty": round(metrics.get("network", 0.0), 6),
                 "federation_penalty": round(metrics.get("federation_penalty", 0.0), 6),
+                "reliability": None
+                if metrics.get("reliability") is None
+                else round(float(metrics.get("reliability")), 6),
+                "availability_window_sec": None
+                if metrics.get("availability_window_sec") is None
+                else round(float(metrics.get("availability_window_sec")), 6),
+                "reliability_gap": round(float(metrics.get("reliability_gap", 0.0)), 6),
+                "availability_gap": round(float(metrics.get("availability_gap", 0.0)), 6),
                 "format": metrics.get("format"),
                 "prev_node": prev_node,
                 "link_loss_pct": round(metrics.get("link_loss_pct", 0.0), 6),
@@ -343,6 +381,33 @@ class MarkovPlanner:
             fed_pen = self._federation_penalty(fed_name)
             rl_val = self.rl_policy.value(self._stage_sig(stage), name) if self.rl_policy else 0.0
             format_choice = self._choose_format(stage, node)
+
+            try:
+                reliability = self.state.node_reliability(name)
+            except Exception:
+                reliability = None
+            if reliability is not None:
+                reliability_metric = clamp01(float(reliability))
+                reliability_gap = max(0.0, 1.0 - reliability_metric)
+            else:
+                reliability_metric = None
+                reliability_gap = clamp01(self.unknown_reliability_penalty)
+
+            try:
+                availability = self.state.node_availability_window(name)
+            except Exception:
+                availability = None
+            if availability is not None and self.availability_horizon_sec > 0.0:
+                avail = max(0.0, float(availability))
+                availability_gap = clamp01(
+                    (self.availability_horizon_sec - min(avail, self.availability_horizon_sec))
+                    / max(self.availability_horizon_sec, 1e-6)
+                )
+            elif availability is None:
+                availability_gap = clamp01(self.unknown_availability_penalty)
+            else:
+                availability_gap = 0.0
+
             out[name] = {
                 "node": name,
                 "compute_ms": compute_ms,
@@ -357,6 +422,10 @@ class MarkovPlanner:
                 "rl_penalty": clamp01(self._rl_penalty(rl_val)),
                 "rl_value": rl_val,
                 "format": format_choice,
+                "reliability": reliability_metric,
+                "availability_window_sec": None if availability is None else float(availability),
+                "reliability_gap": reliability_gap,
+                "availability_gap": availability_gap,
                 "requested_resources": self._resource_request(stage),
                 "link_loss_pct": link_loss,
             }
@@ -364,7 +433,17 @@ class MarkovPlanner:
 
     def _metric_bounds(self, candidates: Iterable[Dict[str, Any]]) -> Tuple[Dict[str, float], Dict[str, float]]:
         metrics = [c for c in candidates]
-        keys = ["latency", "energy", "risk", "load", "network", "federation_penalty", "rl_penalty"]
+        keys = [
+            "latency",
+            "energy",
+            "risk",
+            "load",
+            "network",
+            "federation_penalty",
+            "rl_penalty",
+            "reliability_gap",
+            "availability_gap",
+        ]
         ideals = {k: float("inf") for k in keys}
         nadirs = {k: float("-inf") for k in keys}
         for cand in metrics:
@@ -397,6 +476,8 @@ class MarkovPlanner:
             ("network", weights.network),
             ("federation_penalty", weights.federation),
             ("rl_penalty", weights.rl),
+            ("reliability_gap", weights.reliability),
+            ("availability_gap", weights.availability),
         ]:
             span = max(1e-9, nadirs[key] - ideals[key])
             norm = (float(metrics.get(key, 0.0)) - ideals[key]) / span
@@ -501,7 +582,7 @@ class MarkovPlanner:
         return rl_stage_sig(stage)
 
     def _serialise_candidate(self, total: float, payload: Dict[str, Any]) -> Dict[str, Any]:
-        metrics = payload.get("metrics", {})
+        metrics = payload.get("metrics") or payload
         return {
             "node": payload.get("node"),
             "total_cost": round(float(total), 6),
@@ -517,6 +598,14 @@ class MarkovPlanner:
             "federation_penalty": round(float(metrics.get("federation_penalty", 0.0)), 6),
             "rl_penalty": round(float(metrics.get("rl_penalty", 0.0)), 6),
             "rl_value": round(float(metrics.get("rl_value", 0.0)), 6),
+            "reliability": None
+            if metrics.get("reliability") is None
+            else round(float(metrics.get("reliability")), 6),
+            "availability_window_sec": None
+            if metrics.get("availability_window_sec") is None
+            else round(float(metrics.get("availability_window_sec")), 6),
+            "reliability_gap": round(float(metrics.get("reliability_gap", 0.0)), 6),
+            "availability_gap": round(float(metrics.get("availability_gap", 0.0)), 6),
             "federation": metrics.get("federation"),
             "score_breakdown": {
                 k: round(float(v), 6) for k, v in (payload.get("breakdown") or {}).items()

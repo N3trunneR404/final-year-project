@@ -44,6 +44,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from .events import EventBus, build_cloudevent
+from .predict import NodeForecast, PredictiveAnalyzer
+
 
 # ----------------------------- helpers -----------------------------
 
@@ -87,6 +90,15 @@ class NodeDyn:
     used_cpu_cores: float = 0.0
     used_mem_gb: float = 0.0
     used_gpu_vram_gb: float = 0.0
+    reliability: float = 0.95
+    availability_window_sec: Optional[float] = None
+    mtbf_hours: Optional[float] = None
+    uptime_hours: Optional[float] = None
+    battery_pct: Optional[float] = None
+    battery_drain_pct_per_hr: Optional[float] = None
+    util_forecast: float = 0.0
+    projected_derate: float = 0.0
+    predicted_failure_window_sec: Optional[float] = None
     reservations: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # res_id -> req
 
 
@@ -99,6 +111,7 @@ class LinkDyn:
     jitter_ms: Optional[float] = None
     loss_pct: Optional[float] = None
     ecn: Optional[bool] = None
+    latency_p95_ms: Optional[float] = None
 
 
 # ----------------------------- DT State -----------------------------
@@ -117,6 +130,11 @@ class DTState:
         self.overrides_path = Path(overrides_path)
 
         self._lock = threading.RLock()
+        event_buf = max(32, safe_int(os.environ.get("FABRIC_DT_EVENT_BUFFER", 512), 512))
+        self._events = EventBus(maxlen=event_buf)
+        self._predictor = PredictiveAnalyzer()
+        self._snapshot_cache: Optional[Dict[str, Any]] = None
+        self._snapshot_generation: int = 0
 
         # Static-ish structures
         self.nodes_by_name: Dict[str, Dict[str, Any]] = {}  # includes 'dyn'
@@ -180,12 +198,45 @@ class DTState:
                     data.setdefault("dyn", NodeDyn().__dict__.copy())
                     # Cached capacities
                     self._compute_and_cache_capacities(data)
+                    health = data.get("health") or {}
+                    lifecycle = data.get("lifecycle") or {}
+                    power = data.get("power") or {}
+                    dyn = data.get("dyn") or {}
+                    reliability = health.get("reliability")
+                    availability = lifecycle.get("availability_window_sec")
+                    mtbf = health.get("mtbf_hours")
+                    uptime = health.get("uptime_hours")
+                    battery_pct = power.get("battery_pct")
+                    battery_drain = power.get("battery_drain_pct_per_hr")
+                    dyn.setdefault("reliability", safe_float(reliability, 0.95))
+                    dyn.setdefault("availability_window_sec", safe_float(availability, None))
+                    dyn.setdefault("mtbf_hours", safe_float(mtbf, None))
+                    dyn.setdefault("uptime_hours", safe_float(uptime, None))
+                    dyn.setdefault("battery_pct", None if battery_pct is None else safe_float(battery_pct, None))
+                    dyn.setdefault(
+                        "battery_drain_pct_per_hr",
+                        None if battery_drain is None else safe_float(battery_drain, None),
+                    )
+                    self._predictor.ensure_node(
+                        name,
+                        reliability=None if reliability is None else safe_float(reliability, 0.95),
+                        availability_window_sec=None if availability is None else safe_float(availability, 0.0),
+                        battery_pct=None if battery_pct is None else safe_float(battery_pct, 0.0),
+                        battery_drain_pct_per_hr=None
+                        if battery_drain is None
+                        else safe_float(battery_drain, 0.0),
+                        mtbf_hours=None if mtbf is None else safe_float(mtbf, 0.0),
+                        uptime_hours=None if uptime is None else safe_float(uptime, 0.0),
+                    )
                     nodes[name] = data
                 except Exception as e:
                     print(f"[state] WARN: failed to load node {f.name}: {e}")
 
             self.nodes_by_name = nodes
             self._nodes_mtime = latest_mtime
+            for node_name in self.nodes_by_name.keys():
+                self._update_predictive_for_node_locked(node_name)
+            self._invalidate_snapshot_locked()
 
     def _load_topology_locked(self):
         """Load topology (links + defaults) if present."""
@@ -193,6 +244,7 @@ class DTState:
             if not self.topology_path.exists():
                 self.links_by_key = {}
                 self.defaults = {}
+                self._invalidate_snapshot_locked()
                 return
             try:
                 stat = self.topology_path.stat()
@@ -227,11 +279,16 @@ class DTState:
                     # Strip Nones from base for cleanliness
                     lnd["base"] = {k2: v2 for k2, v2 in lnd["base"].items() if v2 is not None}
                     links[k] = lnd
+                    self._predictor.ensure_link(k)
                 self.links_by_key = links
+                for key in list(self.links_by_key.keys()):
+                    self._update_link_predictive_locked(key)
+                self._invalidate_snapshot_locked()
             except Exception as e:
                 print(f"[state] WARN: failed to load topology: {e}")
                 self.links_by_key = {}
                 self.defaults = {}
+                self._invalidate_snapshot_locked()
 
     def _load_overrides_locked(self, apply_now: bool = True):
         """Load sim/overrides.json if present; optionally apply immediately."""
@@ -268,6 +325,8 @@ class DTState:
                       "packet_dup", "packet_reorder"):
                 if k in changes:
                     dyn[k] = changes[k]
+            if any(key in changes for key in ("down", "thermal_derate")):
+                self._update_predictive_for_node_locked(nname)
 
         # Links
         for k, changes in self._overrides.get("links", {}).items():
@@ -284,6 +343,74 @@ class DTState:
             for kk in ("down", "speed_gbps", "rtt_ms", "jitter_ms", "loss_pct", "ecn"):
                 if kk in changes:
                     dyn[kk] = changes[kk]
+            if any(key in changes for key in ("speed_gbps", "rtt_ms", "jitter_ms", "loss_pct", "down")):
+                self._update_link_predictive_locked(k)
+
+        self._invalidate_snapshot_locked()
+
+    def _emit_event(self, event_type: str, data: Dict[str, Any], subject: Optional[str] = None) -> None:
+        evt = build_cloudevent(event_type, "fabric.dt.state", data, subject=subject)
+        self._events.emit(evt)
+
+    def _update_predictive_for_node_locked(self, name: str) -> Optional[NodeForecast]:
+        node = self.nodes_by_name.get(name)
+        if not node:
+            return None
+        dyn = node.setdefault("dyn", NodeDyn().__dict__.copy())
+        caps = node.get("caps", {})
+        max_cores = safe_float(caps.get("max_cpu_cores"), 0.0)
+        used = safe_float(dyn.get("used_cpu_cores"), 0.0)
+        util = 0.0 if max_cores <= 1e-9 else clamp(used / max(1e-9, max_cores), 0.0, 1.0)
+        forecast = self._predictor.record_node_util(
+            name,
+            util,
+            thermal_derate=safe_float(dyn.get("thermal_derate"), 0.0),
+            reliability=dyn.get("reliability"),
+            availability_window_sec=dyn.get("availability_window_sec"),
+            battery_pct=dyn.get("battery_pct"),
+            battery_drain_pct_per_hr=dyn.get("battery_drain_pct_per_hr"),
+            mtbf_hours=dyn.get("mtbf_hours"),
+            uptime_hours=dyn.get("uptime_hours"),
+        )
+        dyn["util_forecast"] = forecast.util_forecast
+        dyn["projected_derate"] = forecast.projected_derate
+        dyn["reliability"] = forecast.reliability
+        dyn["predicted_failure_window_sec"] = forecast.availability_window_sec
+        event_payload = {
+            "node": name,
+            "util_now": forecast.util_now,
+            "util_forecast": forecast.util_forecast,
+            "reliability": forecast.reliability,
+            "availability_window_sec": forecast.availability_window_sec,
+            "projected_derate": forecast.projected_derate,
+        }
+        self._emit_event("fabric.node.update", event_payload, subject=name)
+        return forecast
+
+    def _update_link_predictive_locked(self, key: str) -> None:
+        link = self.links_by_key.get(key)
+        if not link:
+            return
+        eff = self._effective_link(link)
+        forecast = self._predictor.record_link_metrics(
+            key,
+            latency_ms=safe_float(eff.get("rtt_ms"), 0.0),
+            jitter_ms=safe_float(eff.get("jitter_ms"), 0.0),
+            loss_pct=safe_float(eff.get("loss_pct"), 0.0),
+        )
+        dyn = link.setdefault("dyn", LinkDyn().__dict__.copy())
+        dyn["latency_p95_ms"] = forecast.latency_p95_ms
+        dyn.setdefault("rtt_ms", forecast.latency_ms)
+        dyn.setdefault("jitter_ms", forecast.jitter_ms)
+        dyn.setdefault("loss_pct", forecast.loss_pct)
+        event_payload = {
+            "link": key,
+            "latency_ms": forecast.latency_ms,
+            "jitter_ms": forecast.jitter_ms,
+            "loss_pct": forecast.loss_pct,
+            "latency_p95_ms": forecast.latency_p95_ms,
+        }
+        self._emit_event("fabric.link.update", event_payload, subject=key)
 
     def _compute_and_cache_capacities(self, node: Dict[str, Any]):
         """Precompute static capacities and store under node['caps']."""
@@ -331,48 +458,79 @@ class DTState:
 
     # -------- public API (read) --------
 
+    def _build_snapshot_locked(self) -> Dict[str, Any]:
+        overview = self._predictor.overview()
+        nodes = []
+        predictive_nodes = overview.get("nodes", {})
+        for n in self.nodes_by_name.values():
+            dyn = n.get("dyn", {})
+            caps = n.get("caps", {})
+            eff = self._effective_caps(n)
+            forecast = predictive_nodes.get(n.get("name"), {})
+            merged_dyn = dict(dyn)
+            if forecast:
+                merged_dyn.setdefault("util_forecast", forecast.get("util_forecast"))
+                merged_dyn.setdefault("projected_derate", forecast.get("projected_derate"))
+                merged_dyn.setdefault("reliability", forecast.get("reliability"))
+                merged_dyn.setdefault("predicted_failure_window_sec", forecast.get("availability_window_sec"))
+            nodes.append({
+                "name": n.get("name"),
+                "class": n.get("class"),
+                "arch": n.get("arch"),
+                "formats_supported": n.get("formats_supported", []),
+                "labels": n.get("labels", {}),
+                "network": n.get("network", {}),
+                "gpu": n.get("gpu", {}),
+                "caps": caps,
+                "dyn": merged_dyn,
+                "effective": eff,
+            })
+
+        links = []
+        predictive_links = overview.get("links", {})
+        for k, l in self.links_by_key.items():
+            eff_link = self._effective_link(l)
+            forecast = predictive_links.get(k, {})
+            dyn = dict(l.get("dyn", {}))
+            if forecast:
+                dyn.setdefault("latency_p95_ms", forecast.get("latency_p95_ms"))
+                if forecast.get("latency_ms") is not None:
+                    dyn.setdefault("rtt_ms", forecast.get("latency_ms"))
+                if forecast.get("jitter_ms") is not None:
+                    dyn.setdefault("jitter_ms", forecast.get("jitter_ms"))
+                if forecast.get("loss_pct") is not None:
+                    dyn.setdefault("loss_pct", forecast.get("loss_pct"))
+            links.append({
+                "key": k,
+                "a": l.get("a"),
+                "b": l.get("b"),
+                "base": l.get("base", {}),
+                "dyn": dyn,
+                "effective": eff_link,
+            })
+
+        federations, federation_links, node_federations = self._federation_overview_locked()
+
+        snapshot = {
+            "ts": utc_ms(),
+            "nodes": nodes,
+            "links": links,
+            "federations": federations,
+            "federation_links": federation_links,
+            "node_federations": node_federations,
+            "predictive": overview,
+        }
+        return snapshot
+
+    def _invalidate_snapshot_locked(self) -> None:
+        self._snapshot_cache = None
+
     def snapshot(self) -> Dict[str, Any]:
         """Return a thread-safe snapshot for UI/clients."""
         with self._lock:
-            nodes = []
-            for n in self.nodes_by_name.values():
-                dyn = n.get("dyn", {})
-                caps = n.get("caps", {})
-                eff = self._effective_caps(n)
-                nodes.append({
-                    "name": n.get("name"),
-                    "class": n.get("class"),
-                    "arch": n.get("arch"),
-                    "formats_supported": n.get("formats_supported", []),
-                    "labels": n.get("labels", {}),
-                    "network": n.get("network", {}),
-                    "gpu": n.get("gpu", {}),
-                    "caps": caps,
-                    "dyn": dyn,
-                    "effective": eff,   # remaining capacities after derates+reservations
-                })
-
-            links = []
-            for k, l in self.links_by_key.items():
-                links.append({
-                    "key": k,
-                    "a": l.get("a"),
-                    "b": l.get("b"),
-                    "base": l.get("base", {}),
-                    "dyn": l.get("dyn", {}),
-                    "effective": self._effective_link(l),
-                })
-
-            federations, federation_links, node_federations = self._federation_overview_locked()
-
-            return {
-                "ts": utc_ms(),
-                "nodes": nodes,
-                "links": links,
-                "federations": federations,
-                "federation_links": federation_links,
-                "node_federations": node_federations,
-            }
+            if self._snapshot_cache is None:
+                self._snapshot_cache = self._build_snapshot_locked()
+            return copy.deepcopy(self._snapshot_cache)
 
     def get_node(self, name: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -398,6 +556,8 @@ class DTState:
                 for k, v in changes.items():
                     if k in dyn:
                         dyn[k] = v
+                self._update_predictive_for_node_locked(node)
+                self._emit_event("fabric.node.observe", {"node": node, "changes": changes}, subject=node)
             elif typ == "link":
                 k = p.get("key")
                 changes = p.get("changes") or {}
@@ -414,6 +574,9 @@ class DTState:
             for kk, vv in changes.items():
                 if kk in dyn:
                     dyn[kk] = vv
+            self._update_link_predictive_locked(k)
+            self._emit_event("fabric.link.observe", {"link": k, "changes": changes}, subject=k)
+        self._invalidate_snapshot_locked()
 
     # -------- federation + planner helpers --------
 
@@ -605,6 +768,14 @@ class DTState:
             for name, node in self.nodes_by_name.items():
                 cp = copy.deepcopy(node)
                 cp["effective"] = self._effective_caps(node)
+                forecast = self._predictor.node_forecast(name)
+                cp["predictive"] = {
+                    "util_now": forecast.util_now,
+                    "util_forecast": forecast.util_forecast,
+                    "reliability": forecast.reliability,
+                    "availability_window_sec": forecast.availability_window_sec,
+                    "projected_derate": forecast.projected_derate,
+                }
                 out[name] = cp
             return out
 
@@ -728,6 +899,26 @@ class DTState:
                 "gpu_vram_gb": need_vram,
                 "ts": utc_ms(),
             }
+            forecast = self._update_predictive_for_node_locked(node_name)
+            self._invalidate_snapshot_locked()
+            self._emit_event(
+                "fabric.reservation.created",
+                {
+                    "node": node_name,
+                    "reservation_id": rid,
+                    "cpu_cores": need_cpu,
+                    "mem_gb": need_mem,
+                    "gpu_vram_gb": need_vram,
+                    "forecast": None
+                    if forecast is None
+                    else {
+                        "util_now": forecast.util_now,
+                        "util_forecast": forecast.util_forecast,
+                        "reliability": forecast.reliability,
+                    },
+                },
+                subject=node_name,
+            )
             return rid
 
     def release(self, node_name: str, reservation_id: str) -> bool:
@@ -742,7 +933,55 @@ class DTState:
             dyn["used_cpu_cores"] = max(0.0, dyn.get("used_cpu_cores", 0.0) - safe_float(res.get("cpu_cores"), 0.0))
             dyn["used_mem_gb"] = max(0.0, dyn.get("used_mem_gb", 0.0) - safe_float(res.get("mem_gb"), 0.0))
             dyn["used_gpu_vram_gb"] = max(0.0, dyn.get("used_gpu_vram_gb", 0.0) - safe_float(res.get("gpu_vram_gb"), 0.0))
+            forecast = self._update_predictive_for_node_locked(node_name)
+            self._invalidate_snapshot_locked()
+            self._emit_event(
+                "fabric.reservation.released",
+                {
+                    "node": node_name,
+                    "reservation_id": reservation_id,
+                    "forecast": None
+                    if forecast is None
+                    else {
+                        "util_now": forecast.util_now,
+                        "util_forecast": forecast.util_forecast,
+                        "reliability": forecast.reliability,
+                    },
+                },
+                subject=node_name,
+            )
             return True
+
+    def recent_events(self, limit: int = 100, since_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        events = self._events.recent(limit=limit, since_id=since_id)
+        return [dict(evt) for evt in events]
+
+    def predictive_overview(self) -> Dict[str, Any]:
+        with self._lock:
+            return copy.deepcopy(self._predictor.overview())
+
+    def node_reliability(self, node_name: str) -> float:
+        with self._lock:
+            return self._predictor.node_forecast(node_name).reliability
+
+    def predict_node_derate(self, node_name: str) -> float:
+        with self._lock:
+            return self._predictor.node_forecast(node_name).projected_derate
+
+    def node_availability_window(self, node_name: str) -> Optional[float]:
+        with self._lock:
+            return self._predictor.node_forecast(node_name).availability_window_sec
+
+    def link_variability(self, a: str, b: str) -> Dict[str, Any]:
+        key = link_key(a, b)
+        with self._lock:
+            forecast = self._predictor.link_forecast(key)
+        return {
+            "latency_ms": forecast.latency_ms,
+            "jitter_ms": forecast.jitter_ms,
+            "loss_pct": forecast.loss_pct,
+            "latency_p95_ms": forecast.latency_p95_ms,
+        }
 
     # -------- scoring utility (baseline) --------
 

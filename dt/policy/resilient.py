@@ -35,6 +35,9 @@ DEFAULT_MODES: Dict[str, ModeConfig] = {
         "network_weight": 240.0,
         "resilience_weight": 250.0,
         "prefer_prev_bonus": 15.0,
+        "reliability_weight": 360.0,
+        "availability_penalty_ms": 260.0,
+        "availability_horizon_sec": 240.0,
     },
     "network-aware": {
         "redundancy": 1,
@@ -44,6 +47,9 @@ DEFAULT_MODES: Dict[str, ModeConfig] = {
         "network_weight": 300.0,
         "resilience_weight": 190.0,
         "prefer_prev_bonus": 12.0,
+        "reliability_weight": 320.0,
+        "availability_penalty_ms": 220.0,
+        "availability_horizon_sec": 180.0,
     },
     "federated": {
         "redundancy": 3,
@@ -53,6 +59,9 @@ DEFAULT_MODES: Dict[str, ModeConfig] = {
         "network_weight": 230.0,
         "resilience_weight": 240.0,
         "prefer_prev_bonus": 10.0,
+        "reliability_weight": 340.0,
+        "availability_penalty_ms": 240.0,
+        "availability_horizon_sec": 300.0,
     },
 }
 
@@ -210,6 +219,29 @@ class FederatedPlanner:
         )
         risk_penalty = mode_cfg["risk_weight"] * risk
 
+        reliability = None
+        availability = None
+        try:
+            reliability = self.state.node_reliability(node_name)
+        except Exception:
+            reliability = None
+        try:
+            availability = self.state.node_availability_window(node_name)
+        except Exception:
+            availability = None
+
+        reliability_penalty = 0.0
+        reliability_weight = safe_float(mode_cfg.get("reliability_weight"), 0.0)
+        if reliability is not None and reliability_weight > 0.0:
+            reliability_penalty = reliability_weight * max(0.0, 1.0 - clamp(float(reliability), 0.0, 1.0))
+
+        availability_penalty = 0.0
+        availability_weight = safe_float(mode_cfg.get("availability_penalty_ms"), 0.0)
+        horizon = safe_float(mode_cfg.get("availability_horizon_sec"), 0.0)
+        if availability is not None and availability_weight > 0.0 and horizon > 0.0:
+            avail = max(0.0, float(availability))
+            availability_penalty = availability_weight * max(0.0, (horizon - min(avail, horizon)) / horizon)
+
         score = (
             comp_ms
             + xfer_ms
@@ -218,6 +250,8 @@ class FederatedPlanner:
             + network_penalty
             + resilience_penalty
             + risk_penalty
+            + reliability_penalty
+            + availability_penalty
         )
 
         if prev_node and prev_node == node_name:
@@ -229,12 +263,18 @@ class FederatedPlanner:
             "xfer_ms": round(xfer_ms, 3),
             "energy_kj": round(energy_kj, 5),
             "risk": round(risk, 4),
+            "reliability": None if reliability is None else round(float(reliability), 4),
+            "availability_window_sec": None
+            if availability is None
+            else round(float(availability), 3),
             "score": round(score, 3),
             "load_penalty_ms": round(load_penalty, 3),
             "network_penalty_ms": round(network_penalty, 3),
             "resilience_penalty_ms": round(resilience_penalty, 3),
             "projected_load": round(projected_load, 4),
             "link_loss_pct": round(link_loss, 4),
+            "reliability_penalty_ms": round(reliability_penalty, 3),
+            "availability_penalty_ms": round(availability_penalty, 3),
         }
 
         return score, metrics
@@ -349,6 +389,7 @@ class FederatedPlanner:
 
             fallback_nodes: List[str] = []
             fallback_feds: List[str] = []
+            fallback_entries: List[Dict[str, Any]] = []
             redundancy = max(1, int(cfg["redundancy"]))
             target_fallbacks = max(0, redundancy - 1)
 
@@ -356,14 +397,23 @@ class FederatedPlanner:
                 for candidate in candidates[1:]:
                     cand_name = candidate[2]
                     cand_fed = node_to_fed.get(cand_name) or candidate[3].get("name") or "global"
+                    cand_metrics = candidate[1]
+                    entry = {
+                        "node": cand_name,
+                        "score": round(candidate[0], 3),
+                        "reliability": cand_metrics.get("reliability"),
+                        "availability_window_sec": cand_metrics.get("availability_window_sec"),
+                        "federation": cand_fed,
+                    }
+                    fallback_entries.append(entry)
                     fallback_nodes.append(cand_name)
                     fallback_feds.append(cand_fed)
                     if cand_fed != best_fed_name:
                         fallback_crossfed += 1
-                    if len(fallback_nodes) >= target_fallbacks:
+                    if len(fallback_entries) >= target_fallbacks:
                         break
 
-            shadow_assignments[sid] = fallback_nodes
+            shadow_assignments[sid] = list(fallback_nodes)
 
             res_id = None
             assigned = True
@@ -389,18 +439,19 @@ class FederatedPlanner:
             else:
                 prev_node = None
 
-            per_stage.append(
-                {
-                    "id": sid,
-                    "node": best_name if assigned else None,
-                    "reservation_id": res_id,
-                    "federation": best_fed_name,
-                    "fallbacks": fallback_nodes,
-                    "fallback_federations": fallback_feds,
-                    "infeasible": not assigned,
-                    **best_metrics,
-                }
-            )
+            stage_record = {
+                "id": sid,
+                "node": best_name if assigned else None,
+                "reservation_id": res_id,
+                "federation": best_fed_name,
+                "fallbacks": fallback_entries,
+                "fallback_federations": fallback_feds,
+                "infeasible": not assigned,
+                **best_metrics,
+            }
+            if fallback_entries:
+                stage_record.setdefault("fallback_summaries", fallback_entries)
+            per_stage.append(stage_record)
 
         cost = self.cm.job_cost(job, assignments)
         merged = merge_stage_details(per_stage, cost.get("per_stage"))
@@ -437,6 +488,7 @@ class FederatedPlanner:
             "latency_ms": cost.get("latency_ms"),
             "energy_kj": cost.get("energy_kj"),
             "risk": cost.get("risk"),
+            "avg_reliability": cost.get("avg_reliability"),
             "deadline_ms": ddl or None,
             "slo_penalty": slo_penalty,
             "infeasible": infeasible or (cost.get("latency_ms") == float("inf")),

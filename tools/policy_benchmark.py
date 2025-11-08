@@ -109,6 +109,7 @@ def aggregate_metrics(results: List[Dict[str, object]]) -> Dict[str, float]:
     energy = []
     risk = []
     infeasible = 0
+    reliability = []
     for item in results:
         try:
             latency.append(float(item.get("latency_ms", 0.0)))
@@ -122,6 +123,12 @@ def aggregate_metrics(results: List[Dict[str, object]]) -> Dict[str, float]:
             risk.append(float(item.get("risk", 0.0)))
         except Exception:
             pass
+        try:
+            avg_rel = item.get("avg_reliability")
+            if avg_rel is not None:
+                reliability.append(float(avg_rel))
+        except Exception:
+            pass
         if item.get("infeasible"):
             infeasible += 1
     n = max(1, len(results))
@@ -130,6 +137,7 @@ def aggregate_metrics(results: List[Dict[str, object]]) -> Dict[str, float]:
         "energy_avg": float(np.mean(energy)) if energy else 0.0,
         "risk_avg": float(np.mean(risk)) if risk else 0.0,
         "infeasible_ratio": infeasible / n,
+        "reliability_avg": float(np.mean(reliability)) if reliability else 0.0,
     }
 
 
@@ -140,8 +148,9 @@ def plot_metrics(summary: Dict[str, Dict[str, float]], out_path: Path) -> None:
     energy = [summary[s]["energy_avg"] for s in strategies]
     risk = [summary[s]["risk_avg"] for s in strategies]
     infeasible = [summary[s]["infeasible_ratio"] * 100.0 for s in strategies]
+    reliability = [summary[s].get("reliability_avg", 0.0) * 100.0 for s in strategies]
 
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    fig, axes = plt.subplots(1, 5, figsize=(20, 4))
 
     labels = [STRATEGY_LABELS.get(s, s) for s in strategies]
 
@@ -165,6 +174,11 @@ def plot_metrics(summary: Dict[str, Dict[str, float]], out_path: Path) -> None:
     axes[3].set_title("Infeasible (%)")
     axes[3].set_xticks(idx)
     axes[3].tick_params(axis="x", which="both", bottom=False, top=False, labelbottom=False)
+
+    axes[4].bar(idx, reliability, color="#dd8452")
+    axes[4].set_title("Reliability (%)")
+    axes[4].set_xticks(idx)
+    axes[4].tick_params(axis="x", which="both", bottom=False, top=False, labelbottom=False)
 
     for ax in axes:
         ax.grid(True, axis="y", linestyle="--", alpha=0.3)

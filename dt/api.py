@@ -33,8 +33,9 @@ from typing import Any, Deque, Dict, List, Optional
 
 from flask import Flask, jsonify, request
 
-from .state import DTState, safe_float
+from .state import DTState, safe_float, safe_int
 from .cost_model import CostModel
+from .exporters import as_dtdl, as_k8s_crds
 from .policy.resilient import FederatedPlanner
 from .policy.mdp import MarkovPlanner
 from .policy.rl_stub import RLPolicy
@@ -160,7 +161,6 @@ def _ensure_jobs(obj: Any) -> List[Dict[str, Any]]:
     return []
 
 
-
 # -----------------------------------
 # Routes
 # -----------------------------------
@@ -245,6 +245,8 @@ def plan():
     planner_result["deadline_ms"] = ddl or None
     planner_result["slo_penalty"] = penalty
     planner_result["ts"] = int(time.time() * 1000)
+    planner_result.setdefault("avg_reliability", planner_result.get("avg_reliability"))
+    planner_result["predictive"] = STATE.predictive_overview()
     RECENT_PLANS.appendleft(planner_result)
     return _ok(planner_result)
 
@@ -259,10 +261,23 @@ def jobs():
     return _ok(_load_job_catalog())
 
 
+@app.get("/events")
+def events():
+    since = request.args.get("since")
+    limit_int = safe_int(request.args.get("limit", 100), 100)
+    limit_int = max(1, min(limit_int, 500))
+    recent = STATE.recent_events(limit=limit_int, since_id=since)
+    return _ok({"events": recent, "limit": limit_int, "since": since})
 
-@app.get("/plans")
-def plans():
-    return _ok(list(RECENT_PLANS))
+
+@app.get("/standards/dtdl")
+def standards_dtdl():
+    return _ok(as_dtdl(STATE))
+
+
+@app.get("/standards/crds")
+def standards_crds():
+    return _ok(as_k8s_crds(STATE))
 
 
 @app.post("/plan_batch")
