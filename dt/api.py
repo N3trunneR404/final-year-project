@@ -160,6 +160,7 @@ def _ensure_jobs(obj: Any) -> List[Dict[str, Any]]:
     return []
 
 
+
 # -----------------------------------
 # Routes
 # -----------------------------------
@@ -256,6 +257,12 @@ def plans():
 @app.get("/jobs")
 def jobs():
     return _ok(_load_job_catalog())
+
+
+
+@app.get("/plans")
+def plans():
+    return _ok(list(RECENT_PLANS))
 
 
 @app.post("/plan_batch")
