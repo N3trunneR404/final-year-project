@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -48,6 +49,14 @@ except Exception:
 
 import yaml
 
+from sim.chaos import (
+    ChaosEngine,
+    OverridesStore,
+    collect_chaos_events,
+    load_nodes_index,
+    load_topology,
+)
+
 # ----------------- App singletons -----------------
 
 app = Flask(__name__)
@@ -68,6 +77,17 @@ RL_AGENT: Optional[RLPolicy] = None
 MDP_PLANNER: Optional[MarkovPlanner] = None
 
 RECENT_PLANS: deque = deque(maxlen=50)
+
+CHAOS_THREAD: Optional[threading.Thread] = None
+CHAOS_ENGINE: Optional[ChaosEngine] = None
+CHAOS_STATUS: Dict[str, Any] = {
+    "running": False,
+    "scenario": None,
+    "speed": 1.0,
+    "events": 0,
+    "last_error": None,
+}
+CHAOS_LOCK = threading.Lock()
 
 
 def _configure_runtime(remote: Optional[str], timeout: float) -> None:
@@ -162,6 +182,139 @@ def _remote_url(path: str) -> str:
     if not path.startswith("/"):
         path = "/" + path
     return f"{REMOTE_BASE}{path}"
+
+
+class DTOverridesStore(OverridesStore):
+    """Overrides store that also mutates the embedded DT state."""
+
+    def __init__(self, path: Path, state: Optional[DTState]):
+        super().__init__(path)
+        self._state = state
+
+    def _apply_to_state(self, payload: Dict[str, Any], action: str) -> None:
+        if not self._state:
+            return
+        typ = payload.get("type")
+        if typ == "node":
+            node = payload.get("node")
+            if not node:
+                return
+            if action == "apply":
+                changes = dict(payload.get("changes") or {})
+            else:
+                fields = list(payload.get("fields") or [])
+                changes = {field: None for field in fields}
+            if not changes:
+                return
+            self._state.apply_observation(
+                {"payload": {"type": "node", "node": node, "changes": changes}}
+            )
+        elif typ == "link":
+            key = payload.get("key")
+            if not key:
+                return
+            if action == "apply":
+                changes = dict(payload.get("changes") or {})
+            else:
+                fields = list(payload.get("fields") or [])
+                changes = {field: None for field in fields}
+            if not changes:
+                return
+            self._state.apply_observation(
+                {"payload": {"type": "link", "key": key, "changes": changes}}
+            )
+
+    @staticmethod
+    def _link_key(a: str, b: str) -> str:
+        return "|".join(sorted([a, b]))
+
+    def link_apply(self, a: str, b: str, changes: Dict[str, Any]):
+        key = self._link_key(a, b)
+        super().link_apply(a, b, changes)
+        self._apply_to_state({"type": "link", "key": key, "changes": dict(changes or {})}, "apply")
+
+    def link_revert(self, a: str, b: str, fields: List[str]):
+        key = self._link_key(a, b)
+        super().link_revert(a, b, fields)
+        self._apply_to_state({"type": "link", "key": key, "fields": list(fields or [])}, "revert")
+
+    def node_apply(self, node: str, changes: Dict[str, Any]):
+        super().node_apply(node, changes)
+        self._apply_to_state({"type": "node", "node": node, "changes": dict(changes or {})}, "apply")
+
+    def node_revert(self, node: str, fields: List[str]):
+        super().node_revert(node, fields)
+        self._apply_to_state({"type": "node", "node": node, "fields": list(fields or [])}, "revert")
+
+
+def _local_state_available() -> bool:
+    return STATE is not None and not REMOTE_BASE
+
+
+def _chaos_paths() -> Dict[str, Path]:
+    if not _local_state_available():
+        raise RuntimeError("embedded DT state unavailable")
+    assert STATE is not None
+    return {
+        "topology": STATE.topology_path,
+        "overrides": STATE.overrides_path,
+        "nodes": STATE.nodes_dir,
+    }
+
+
+def _build_chaos_engine(scenario: Optional[str], speed: float) -> Dict[str, Any]:
+    paths = _chaos_paths()
+    topology = load_topology(paths["topology"])
+    schedule = collect_chaos_events(topology, scenario)
+    nodes_index = load_nodes_index(paths["nodes"])
+    store = DTOverridesStore(paths["overrides"], STATE)
+    engine = ChaosEngine(
+        store,
+        speed=max(0.1, speed),
+        verbose=False,
+        nodes_index=nodes_index,
+    )
+    return {"engine": engine, "schedule": schedule}
+
+
+def _chaos_worker(engine: ChaosEngine, schedule: List[Any]):
+    global CHAOS_THREAD, CHAOS_ENGINE
+    try:
+        engine.run(schedule)
+    except Exception as exc:
+        with CHAOS_LOCK:
+            CHAOS_STATUS["last_error"] = str(exc)
+    finally:
+        with CHAOS_LOCK:
+            CHAOS_STATUS["running"] = False
+            CHAOS_ENGINE = None
+            CHAOS_THREAD = None
+
+
+def _chaos_status() -> Dict[str, Any]:
+    with CHAOS_LOCK:
+        running = bool(CHAOS_THREAD and CHAOS_THREAD.is_alive())
+        status = dict(CHAOS_STATUS)
+        status["running"] = running
+    return status
+
+
+def _update_chaos_status_running(scenario: Optional[str], speed: float, events: int):
+    with CHAOS_LOCK:
+        CHAOS_STATUS.update(
+            {
+                "running": True,
+                "scenario": scenario,
+                "speed": speed,
+                "events": events,
+                "last_error": None,
+            }
+        )
+
+
+def _set_chaos_idle():
+    with CHAOS_LOCK:
+        CHAOS_STATUS.update({"running": False})
 
 
 def _proxy_remote(method: str, path: str, payload: Optional[Dict[str, Any]] = None):
@@ -286,6 +439,94 @@ def _load_job_catalog() -> List[Dict[str, Any]]:
                 }
             )
     return entries
+
+
+def _load_chaos_scenarios() -> Dict[str, Any]:
+    if not _local_state_available():
+        return {"scenarios": [], "has_base": False}
+    try:
+        paths = _chaos_paths()
+        topology = load_topology(paths["topology"])
+    except Exception as exc:
+        raise RuntimeError(f"failed to load topology: {exc}") from exc
+    scenarios: List[Dict[str, Any]] = []
+    for sc in (topology.get("scenarios") or []):
+        if not isinstance(sc, dict):
+            continue
+        name = sc.get("name")
+        if not name:
+            continue
+        scenarios.append({
+            "name": name,
+            "description": sc.get("description"),
+        })
+    has_base = bool(topology.get("chaos"))
+    return {"scenarios": scenarios, "has_base": has_base}
+
+
+@app.get("/api/chaos_scenarios")
+def api_chaos_scenarios():
+    if REMOTE_BASE:
+        return _ok({"scenarios": [], "has_base": False, "remote": True})
+    try:
+        data = _load_chaos_scenarios()
+    except Exception as exc:
+        return _err(str(exc))
+    return _ok(data)
+
+
+@app.get("/api/chaos")
+def api_chaos_status():
+    if REMOTE_BASE:
+        return _ok({"running": False, "remote": True})
+    return _ok(_chaos_status())
+
+
+@app.post("/api/chaos")
+def api_chaos_control():
+    global CHAOS_ENGINE, CHAOS_THREAD
+    if REMOTE_BASE:
+        return _err("Chaos controls unavailable when using a remote DT")
+    if not request.is_json:
+        return _err("expected JSON body")
+    payload = request.get_json() or {}
+    action = (payload.get("action") or "start").strip().lower()
+    if action == "stop":
+        with CHAOS_LOCK:
+            engine = CHAOS_ENGINE
+            thread = CHAOS_THREAD
+        if not engine or not thread or not thread.is_alive():
+            return _err("Chaos runner is not active")
+        engine.stop()
+        thread.join(timeout=2.0)
+        return _ok(_chaos_status())
+
+    scenario = payload.get("scenario")
+    speed = safe_float(payload.get("speed"), 12.0)
+    if speed <= 0:
+        speed = 1.0
+    try:
+        bundle = _build_chaos_engine(scenario, speed)
+    except Exception as exc:
+        return _err(str(exc))
+    schedule = bundle.get("schedule") or []
+    if not schedule:
+        return _err("Selected scenario has no chaos events")
+    with CHAOS_LOCK:
+        if CHAOS_THREAD and CHAOS_THREAD.is_alive():
+            return _err("Chaos runner is already active")
+        engine = bundle["engine"]
+        thread = threading.Thread(
+            target=_chaos_worker,
+            args=(engine, schedule),
+            name="ChaosRunner",
+            daemon=True,
+        )
+        CHAOS_ENGINE = engine
+        CHAOS_THREAD = thread
+        _update_chaos_status_running(scenario, speed, len(schedule))
+        thread.start()
+    return _ok(_chaos_status())
 
 
 @app.get("/api/health")
@@ -754,6 +995,19 @@ hr { border: none; border-top: 1px solid #1f2a39; margin: 12px 0; }
   </div>
 
   <div class="card">
+    <h2>Chaos Runner</h2>
+    <div class="row" style="margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+      <select id="chaosScenario" class="flex" style="min-width:200px;">
+        <option value="">Loading scenarios…</option>
+      </select>
+      <label class="flex" style="gap:6px; align-items:center;"><span>Speed</span> <input id="chaosSpeed" type="number" min="0.1" step="0.1" value="12" style="width:90px;" /></label>
+      <button class="btn" id="chaosStart" onclick="startChaos()">Start chaos</button>
+      <button class="btn secondary" id="chaosStop" onclick="stopChaos()">Stop</button>
+    </div>
+    <div class="small" id="chaosStatus">Chaos idle. Loading scenarios…</div>
+  </div>
+
+  <div class="card">
     <h2>Apply Observation (node/link)</h2>
     <div class="row" style="margin-bottom:8px;">
       <button class="btn" onclick="applyObs()">Apply</button>
@@ -774,6 +1028,11 @@ let TOPO_SIM = null;
 let TOPO_RESIZE = null;
 let JOB_CATALOG = [];
 let JOB_SELECTED = null;
+let TOPO_SIGNATURE = null;
+let TOPO_POS = new Map();
+let CHAOS_OPTIONS = { scenarios: [], has_base: false, remote: false };
+let CHAOS_STATUS_STATE = { running: false, remote: false };
+let CHAOS_STATUS_TIMER = null;
 
 async function fetchJSON(url, opts) {
   const r = await fetch(url, opts || {});
@@ -831,6 +1090,7 @@ function renderJobCatalog() {
     return `<button class="btn secondary ${active}" onclick="selectJob(${idx})">${esc(entry.id || 'job')} • ${esc(entry.file || '')}</button>`;
   }).join('');
   renderJobPreview(JOB_CATALOG[JOB_SELECTED]);
+  loadSelectedJob(true);
 }
 
 function renderJobPreview(entry) {
@@ -877,22 +1137,142 @@ function selectJob(idx) {
   renderJobCatalog();
 }
 
-function loadSelectedJob() {
+function loadSelectedJob(auto=false) {
   if (JOB_SELECTED === null || !JOB_CATALOG[JOB_SELECTED]) {
-    alert('Select a job from the catalog first.');
+    if (!auto) alert('Select a job from the catalog first.');
     return;
   }
   const job = JOB_CATALOG[JOB_SELECTED].job || {};
   const editor = document.getElementById('jobJson');
   if (editor) {
     editor.value = JSON.stringify(job, null, 2);
-    editor.focus();
+    if (!auto) editor.focus();
   }
 }
 
 function clearJobEditor() {
   const editor = document.getElementById('jobJson');
   if (editor) editor.value = '';
+}
+
+function renderChaosControls() {
+  const select = document.getElementById('chaosScenario');
+  const statusEl = document.getElementById('chaosStatus');
+  const startBtn = document.getElementById('chaosStart');
+  const stopBtn = document.getElementById('chaosStop');
+  const speedInput = document.getElementById('chaosSpeed');
+  if (!select || !statusEl) return;
+  const remote = Boolean((CHAOS_OPTIONS && CHAOS_OPTIONS.remote) || (CHAOS_STATUS_STATE && CHAOS_STATUS_STATE.remote));
+  const scenarios = Array.isArray(CHAOS_OPTIONS.scenarios) ? CHAOS_OPTIONS.scenarios : [];
+  const items = [];
+  if (CHAOS_OPTIONS.has_base) {
+    items.push({ value: '', label: 'Default schedule' });
+  }
+  scenarios.forEach(sc => {
+    if (!sc || !sc.name) return;
+    const desc = sc.description ? ` – ${sc.description}` : '';
+    items.push({ value: sc.name, label: `Scenario: ${sc.name}${desc}` });
+  });
+  if (!items.length) {
+    select.innerHTML = '<option value="" disabled>No scenarios available</option>';
+    select.value = '';
+    select.disabled = true;
+  } else {
+
+    select.innerHTML = items.map(opt => `<option value="${esc(opt.value)}">${esc(opt.label)}</option>`).join('');
+    const current = CHAOS_STATUS_STATE && CHAOS_STATUS_STATE.scenario !== undefined ? CHAOS_STATUS_STATE.scenario : null;
+    if (current !== null && select.querySelector(`option[value="${current}"]`)) {
+      select.value = current;
+    } else if (CHAOS_STATUS_STATE && CHAOS_STATUS_STATE.scenario === null) {
+      select.value = '';
+    }
+    select.disabled = false;
+  }
+  if (remote) {
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = true;
+    if (speedInput) speedInput.disabled = true;
+    statusEl.textContent = 'Chaos controls require the embedded DT runtime.';
+    return;
+  }
+  if (CHAOS_OPTIONS && CHAOS_OPTIONS.error) {
+    statusEl.textContent = `Chaos scenarios unavailable: ${CHAOS_OPTIONS.error}`;
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = true;
+    if (speedInput) speedInput.disabled = true;
+    return;
+  }
+  if (startBtn) startBtn.disabled = Boolean(CHAOS_STATUS_STATE && CHAOS_STATUS_STATE.running);
+  if (stopBtn) stopBtn.disabled = !(CHAOS_STATUS_STATE && CHAOS_STATUS_STATE.running);
+  if (speedInput) speedInput.disabled = false;
+  if (CHAOS_STATUS_STATE && CHAOS_STATUS_STATE.last_error) {
+    statusEl.textContent = `Last error: ${CHAOS_STATUS_STATE.last_error}`;
+    return;
+  }
+  if (CHAOS_STATUS_STATE && CHAOS_STATUS_STATE.running) {
+    const scenarioLabel = CHAOS_STATUS_STATE.scenario ? `Scenario: ${CHAOS_STATUS_STATE.scenario}` : 'Default schedule';
+    const speed = CHAOS_STATUS_STATE.speed !== undefined ? fmt(CHAOS_STATUS_STATE.speed, 1) : '—';
+    const events = CHAOS_STATUS_STATE.events !== undefined ? CHAOS_STATUS_STATE.events : '—';
+    statusEl.textContent = `Chaos running • ${scenarioLabel} • speed x${speed} • events ${events}`;
+    return;
+  }
+  if (items.length) {
+    statusEl.textContent = 'Chaos idle. Pick a scenario and start to inject failures.';
+  } else {
+    statusEl.textContent = 'Chaos idle. Define chaos schedules in sim/topology.yaml to enable experiments.';
+  }
+}
+
+async function loadChaosOptions() {
+  try {
+    const data = await fetchJSON('/api/chaos_scenarios');
+    CHAOS_OPTIONS = Object.assign({ scenarios: [], has_base: false, remote: false }, data || {});
+    if (!Array.isArray(CHAOS_OPTIONS.scenarios)) CHAOS_OPTIONS.scenarios = [];
+  } catch (e) {
+    CHAOS_OPTIONS = { scenarios: [], has_base: false, error: e.message, remote: false };
+  }
+  renderChaosControls();
+}
+
+async function refreshChaosStatus() {
+  try {
+    const data = await fetchJSON('/api/chaos');
+    CHAOS_STATUS_STATE = Object.assign({ running: false }, data || {});
+  } catch (e) {
+    CHAOS_STATUS_STATE = { running: false, error: e.message };
+  }
+  renderChaosControls();
+}
+
+async function startChaos() {
+  const select = document.getElementById('chaosScenario');
+  const speedInput = document.getElementById('chaosSpeed');
+  const scenario = select ? select.value : '';
+  const speed = speedInput ? Number(speedInput.value || 12) : 12;
+  try {
+    await fetchJSON('/api/chaos', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start', scenario: scenario || null, speed })
+    });
+    await refreshChaosStatus();
+    await refresh();
+  } catch (e) {
+    alert('Failed to start chaos: ' + e.message);
+  }
+}
+
+async function stopChaos() {
+  try {
+    await fetchJSON('/api/chaos', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'stop' })
+    });
+    await refreshChaosStatus();
+  } catch (e) {
+    alert('Failed to stop chaos: ' + e.message);
+  }
 }
 
 function renderOverview() {
@@ -1056,14 +1436,13 @@ function destroyTopology() {
 function renderTopology() {
   const wrap = document.getElementById('topology_canvas');
   if (!wrap) return;
-  if (!SNAP || !SNAP.nodes || SNAP.nodes.length === 0) {
+  if (!SNAP || !Array.isArray(SNAP.nodes) || SNAP.nodes.length === 0) {
     destroyTopology();
     wrap.innerHTML = '<div class="small">No topology data yet.</div>';
+    TOPO_SIGNATURE = null;
+    TOPO_POS = new Map();
     return;
   }
-  wrap.classList.remove('topology-refresh');
-  void wrap.offsetWidth;
-  wrap.classList.add('topology-refresh');
 
   const assignments = new Map();
   if (LAST_PLAN && Array.isArray(LAST_PLAN.per_stage)) {
@@ -1139,9 +1518,72 @@ function renderTopology() {
       };
     });
 
+  const round = x => Math.round((Number(x) || 0) * 1000) / 1000;
+  const nodeParts = nodes
+    .map(n => [
+      n.id,
+      n.down ? 1 : 0,
+      round(n.derate),
+      round(n.cpuCap),
+      round(n.cpuUsed),
+      round(n.memCap),
+      round(n.memUsed),
+      n.reservations,
+      n.assignCount,
+      n.assignStages.join(','),
+      n.shadowCount,
+      n.shadowStages.join(','),
+      n.federation || ''
+    ].join('|'))
+    .sort();
+  const linkParts = links
+    .map(l => [
+      l.source,
+      l.target,
+      l.down ? 1 : 0,
+      round(l.speed),
+      round(l.loss),
+      round(l.rtt),
+      round(l.jitter)
+    ].join('|'))
+    .sort();
+  const signature = `${nodeParts.join(';')}#${linkParts.join(';')}`;
+  if (signature === TOPO_SIGNATURE) {
+    return;
+  }
+  TOPO_SIGNATURE = signature;
+
+  const prevPositions = new Map();
+  if (TOPO_SIM && typeof TOPO_SIM.nodes === 'function') {
+    try {
+      TOPO_SIM.nodes().forEach(n => {
+        if (n && n.id) prevPositions.set(n.id, {x: n.x, y: n.y});
+      });
+    } catch (e) {
+      // ignore if simulation not ready
+    }
+  } else if (TOPO_POS && typeof TOPO_POS.forEach === 'function') {
+    TOPO_POS.forEach((value, key) => {
+      if (value && typeof value.x === 'number' && typeof value.y === 'number') {
+        prevPositions.set(key, {x: value.x, y: value.y});
+      }
+    });
+  }
+
+  destroyTopology();
+  TOPO_POS = new Map(prevPositions);
+
   const width = wrap.clientWidth || 720;
   const height = Math.max(360, Math.min(760, 180 + nodes.length * 14));
   wrap.innerHTML = '';
+
+  nodes.forEach(n => {
+    const prev = prevPositions.get(n.id);
+    if (prev) {
+      n.x = prev.x;
+      n.y = prev.y;
+    }
+  });
 
   const svg = d3
     .select(wrap)
@@ -1304,11 +1746,18 @@ function renderTopology() {
       .attr('x2', d => d.target.x)
       .attr('y2', d => d.target.y);
     node.attr('transform', d => `translate(${d.x},${d.y})`);
+    const latest = new Map();
+    nodes.forEach(n => {
+      if (n && n.id) {
+        latest.set(n.id, {x: n.x, y: n.y});
+      }
+    });
+    TOPO_POS = latest;
   });
 
-  destroyTopology();
   TOPO_SIM = simulation;
 }
+
 
 function renderPlanGraph() {
   const wrap = document.getElementById('plan_graph');
@@ -1505,9 +1954,12 @@ window.addEventListener('resize', () => {
 });
 
 setInterval(refresh, 2000);
+CHAOS_STATUS_TIMER = setInterval(refreshChaosStatus, 5000);
 window.addEventListener('load', () => {
   refresh();
   loadJobCatalog();
+  loadChaosOptions();
+  refreshChaosStatus();
 });
 </script>
 
